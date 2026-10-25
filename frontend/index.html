@@ -1,0 +1,1110 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FlightLog</title>
+<link rel="icon" type="image/png" href="favicon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap">
+<link rel="stylesheet" href="theme.css">
+<link rel="stylesheet" href="vendor/leaflet.css">
+<script src="vendor/leaflet.js"></script>
+<script src="data.js"></script>
+<script src="core.js"></script>
+<script src="app.js"></script>
+<script src="vendor/alpine.min.js" defer></script>
+</head>
+<body>
+<div x-data="shell()" x-cloak>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="topbar-row">
+        <a class="brand" href="#/"><img src="logo.png" alt="FlightLog" class="brand-logo"></a>
+        <div class="topbar-right">
+          <span class="env-badge">Self-hosted</span>
+          <a href="#/settings" class="top-btn">Settings</a>
+        </div>
+      </div>
+      <nav class="pill-nav">
+        <a class="pill" :class="{active: route==='home' || route==='flight'}" href="#/">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21 16v-2l-8-5V3.500a1.500 1.500 0 0 0-3 0V9l-8 5v2l8-2.500V19l-2 1.500V22l3.500-1 3.500 1v-1.500L13 19v-5.500z"/></svg>
+          Flights
+        </a>
+        <a class="pill" :class="{active: route==='map'}" href="#/map">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s7-7.500 7-12a7 7 0 1 0-14 0c0 4.500 7 12 7 12Z"/><circle cx="12" cy="10" r="2.500"/></svg>
+          Route map
+        </a>
+        <a class="pill" :class="{active: route==='stats'}" href="#/stats">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 20V10M12 20V4M19 20v-7"/></svg>
+          Statistics
+        </a>
+        <a class="pill" :class="{active: route==='companions'}" href="#/companions">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.300 2.700-6 6-6s6 2.700 6 6"/><circle cx="17" cy="9" r="2.300"/><path d="M15.500 14.200c2.600.5 4.500 2.600 4.500 5.300"/></svg>
+          Companions
+        </a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="page">
+
+      <!-- ================================== FLIGHTS ================================== -->
+      <template x-if="route==='home'">
+        <div class="layout" x-data="flightList()" x-init="load()">
+          <aside class="filters">
+            <a href="#/add" class="btn btn-grey btn-block">+ Log a flight</a>
+
+            <div class="filter-group" x-show="flights.length">
+              <button type="button" class="filter-head" @click="open.year = !open.year">
+                <span>Year</span>
+                <svg :class="{flip: !open.year}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.500" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>
+              </button>
+              <div class="filter-body" x-show="open.year">
+                <label class="check"><input type="radio" value="__all__" x-model="activeYear"><span class="check-text">All years</span><span class="check-count" x-text="flights.length"></span></label>
+                <template x-for="yg in yearGroups" :key="yg.year">
+                  <label class="check"><input type="radio" :value="yg.year" x-model="activeYear"><span class="check-text" x-text="yg.year"></span><span class="check-count" x-text="yg.flights.length"></span></label>
+                </template>
+              </div>
+            </div>
+
+            <div class="filter-group" x-show="flights.length">
+              <button type="button" class="filter-head" @click="open.airline = !open.airline">
+                <span>Airline</span>
+                <svg :class="{flip: !open.airline}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.500" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>
+              </button>
+              <div class="filter-body" x-show="open.airline">
+                <div><button type="button" class="link-btn" :disabled="!airlineFilter.length" @click="airlineFilter = []">Clear all</button></div>
+                <template x-for="o in airlineOptions" :key="o.name">
+                  <label class="check"><input type="checkbox" :value="o.name" x-model="airlineFilter"><span class="check-text" x-text="o.name"></span><span class="check-count" x-text="o.n"></span></label>
+                </template>
+              </div>
+            </div>
+
+            <div class="filter-group" x-show="flights.length">
+              <button type="button" class="filter-head" @click="open.cls = !open.cls">
+                <span>Cabin class</span>
+                <svg :class="{flip: !open.cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.500" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>
+              </button>
+              <div class="filter-body" x-show="open.cls">
+                <template x-for="o in classOptions" :key="o.name">
+                  <label class="check"><input type="checkbox" :value="o.name" x-model="classFilter"><span class="check-text" x-text="o.name"></span><span class="check-count" x-text="o.n"></span></label>
+                </template>
+              </div>
+            </div>
+
+            <div class="filter-group" x-show="flights.length">
+              <button type="button" class="filter-head" @click="open.punct = !open.punct">
+                <span>Punctuality</span>
+                <svg :class="{flip: !open.punct}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.500" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>
+              </button>
+              <div class="filter-body" x-show="open.punct">
+                <label class="check"><input type="checkbox" value="On time" x-model="punctFilter"><span class="check-text">On time</span><span class="check-count" x-text="flights.filter(f => !f.delay_reason).length"></span></label>
+                <label class="check"><input type="checkbox" value="Delayed" x-model="punctFilter"><span class="check-text">Delayed</span><span class="check-count" x-text="flights.filter(f => f.delay_reason).length"></span></label>
+              </div>
+            </div>
+          </aside>
+
+          <section class="results">
+            <h1 class="h1">Your trips &amp; flights</h1>
+            <p class="sub">Return trips, one-way trips with connections, and single flights you have logged.</p>
+
+            <template x-if="error"><p class="form-error" x-text="error"></p></template>
+            <template x-if="loading && !error"><p class="form-hint">Loading&hellip;</p></template>
+            <template x-if="!loading && flights.length === 0">
+              <div class="empty-state">No flights logged yet. <a href="#/add">Log your first flight</a>.</div>
+            </template>
+
+            <template x-if="!loading && flights.length > 0">
+              <div>
+                <div class="results-line">
+                  <span><span x-text="summaryLine"></span> sorted by <b x-text="sortLabel"></b></span>
+                  <button type="button" class="link-btn" x-show="filtersActive" @click="resetFilters()">Reset filters</button>
+                </div>
+
+                <div class="tabs">
+                  <button type="button" class="tab" :class="{active: sort==='newest'}" @click="sort='newest'">
+                    <span class="tab-t">Newest</span>
+                    <span class="tab-v" x-text="newestInfo.value"></span>
+                    <span class="tab-s" x-text="newestInfo.sub"></span>
+                  </button>
+                  <button type="button" class="tab" :class="{active: sort==='longest'}" @click="sort='longest'">
+                    <span class="tab-t">Longest</span>
+                    <span class="tab-v" x-text="longestInfo.value"></span>
+                    <span class="tab-s" x-text="longestInfo.sub"></span>
+                  </button>
+                  <button type="button" class="tab" :class="{active: sort==='shortest'}" @click="sort='shortest'">
+                    <span class="tab-t">Shortest</span>
+                    <span class="tab-v" x-text="shortestInfo.value"></span>
+                    <span class="tab-s" x-text="shortestInfo.sub"></span>
+                  </button>
+                  <label class="tab tab-sort">
+                    <select class="select" x-model="sort" aria-label="Sort trips and flights">
+                      <option value="newest">Sort: Newest</option>
+                      <option value="oldest">Sort: Oldest</option>
+                      <option value="longest">Sort: Longest</option>
+                      <option value="shortest">Sort: Shortest</option>
+                      <option value="airline">Sort: Airline A&ndash;Z</option>
+                    </select>
+                  </label>
+                </div>
+
+                <template x-if="visibleItems.length === 0">
+                  <div class="empty-state">No trips or flights match these filters.</div>
+                </template>
+
+                <div class="flight-list">
+                  <template x-for="item in visibleItems" :key="item.key">
+                    <article class="flight-card">
+                      <div class="fc-main">
+                        <template x-for="row in item.rows" :key="row.id">
+                          <div class="fc-journey">
+                            <div class="fd-dir" x-show="row.label"><span class="fc-pill"><b x-text="row.label"></b><span class="fc-pill-date" x-text="rowDate(row)"></span></span></div>
+                            <div class="fc-meta"><b x-text="row.airlines"></b><span x-text="rowMeta(row) ? rowMeta(row) : ''"></span></div>
+                            <div class="fc-row">
+                              <div class="fd-logo-stack" :class="'n' + row.logos.length" :title="row.airlines">
+                                <template x-for="lg in row.logos" :key="lg.airline">
+                                  <span class="fd-logo-chip">
+                                    <img x-show="lg.url" :src="lg.url" @error="lg.url = null" :alt="lg.airline">
+                                    <span x-show="!lg.url" class="logo-fallback" :style="{background: lg.color, color: lg.colorText}" x-text="initials(lg.airline)"></span>
+                                  </span>
+                                </template>
+                              </div>
+                              <div class="fc-end">
+                                <div class="fc-time" :class="{late: row.depLate}" x-text="row.depTime"></div>
+                                <div class="fc-sched" x-show="row.depSched" x-text="row.depSched"></div>
+                                <div class="fc-code" x-text="row.depCode"></div>
+                              </div>
+                              <div class="fc-path">
+                                <div class="fc-dur" x-text="row.durText || fmtDist(row.distance_km)"></div>
+                                <template x-if="row.stops === 0">
+                                  <div class="fc-line"><span class="dot"></span><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21 16v-2l-8-5V3.500a1.500 1.500 0 0 0-3 0V9l-8 5v2l8-2.500V19l-2 1.500V22l3.500-1 3.500 1v-1.500L13 19v-5.500z" transform="rotate(90 12 12)"/></svg></div>
+                                </template>
+                                <template x-if="row.stops > 0">
+                                  <div class="fd-line fd-line-stops">
+                                    <template x-for="n in row.stops" :key="n"><span class="stop-dot"></span></template>
+                                    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21 16v-2l-8-5V3.500a1.500 1.500 0 0 0-3 0V9l-8 5v2l8-2.500V19l-2 1.500V22l3.500-1 3.500 1v-1.500L13 19v-5.500z" transform="rotate(90 12 12)"/></svg>
+                                  </div>
+                                </template>
+                                <div class="fc-stops" x-show="row.stops === 0 && !itemStopover(item)">Direct</div>
+                                <div class="fd-stops-text" x-show="row.stops > 0" x-text="row.stopsCount"></div>
+                                <div class="fd-stops-codes" x-show="row.stops > 0" x-text="row.stopCodes"></div>
+                              </div>
+                              <div class="fc-end">
+                                <div class="fc-time" :class="{late: row.arrLate}"><span x-text="row.arrTime"></span><sup x-show="row.dayText" x-text="row.dayText"></sup></div>
+                                <div class="fc-sched" x-show="row.arrSched" x-text="row.arrSched"></div>
+                                <div class="fc-code" x-text="row.arrCode"></div>
+                              </div>
+                            </div>
+                            <div class="fc-foot">
+                              <span x-text="rowFoot(row)"></span>
+                              <span class="fc-delay" x-show="row.delayed">Delayed</span>
+                            </div>
+                          </div>
+                        </template>
+                      </div>
+                      <aside class="fc-side">
+                        <div class="fc-side-body">
+                          <span class="fc-side-label">Total cost</span>
+                          <span class="fc-price" :class="{none: !itemPrice(item)}" x-text="itemPrice(item) ? fmtMoney(itemPrice(item)) : 'Not recorded'"></span>
+                        </div>
+                        <span class="fc-side-sub fc-side-kind" x-text="sideSummary(item)"></span>
+                        <a class="btn btn-navy btn-block" :href="item.kind === 'flight' ? '#/flight?id=' + item.key : '#/trip?id=' + item.key">Show details &rarr;</a>
+                      </aside>
+                    </article>
+                  </template>
+                </div>
+              </div>
+            </template>
+          </section>
+        </div>
+      </template>
+
+      <!-- =============================== FLIGHT DETAILS ============================== -->
+      <template x-if="route==='flight'">
+        <div class="detail" x-data="flightDetail(params.id || '')" x-init="load()">
+          <a href="#/" class="back-link">&larr; Back to flights</a>
+          <template x-if="error"><p class="form-error" x-text="error"></p></template>
+          <template x-if="loading && !error"><p class="form-hint">Loading&hellip;</p></template>
+          <template x-if="!loading && f">
+            <div>
+              <div class="detail-head">
+                <div class="detail-head-text">
+                  <h1 class="h1" style="margin:0;" x-text="f.from_airport.city + ' to ' + f.to_airport.city"></h1>
+                  <div class="form-hint" x-text="fmtLongDate(f.date) + ' \u00b7 ' + f.airline + (f.flight_number ? ' ' + f.flight_number : '')"></div>
+                </div>
+                <div class="detail-actions">
+                  <template x-if="f.trip_id"><a class="btn btn-navy" :href="'#/trip?id=' + f.trip_id">View whole trip</a></template>
+                  <template x-if="!f.trip_id">
+                    <div class="detail-actions">
+                      <a class="btn btn-navy" :href="'#/add?id=' + f.id">Edit flight</a>
+                      <button type="button" class="btn btn-danger" @click="del()">Delete</button>
+                    </div>
+                  </template>
+                </div>
+              </div>
+
+              <div class="detail-split">
+                <aside class="fd-panel">
+                  <h2 class="fd-title">Flight Details</h2>
+                  <div class="fd-dir"><span><b>Flight</b> <span class="fd-date" x-text="fmtDayDate(f.date)"></span></span><small>all times are local</small></div>
+                  <div class="fd-card" x-data="{open: true}">
+                      <div class="fd-top">
+                        <div class="fd-airline"><b x-text="f.airline"></b><span x-text="(f.flight_number || f.aircraft_type) ? ' \u00b7 ' + [f.flight_number, f.aircraft_type].filter(Boolean).join(' \u00b7 ') : ''"></span></div>
+                        <div class="fd-row">
+                          <div class="fd-logo">
+                            <img x-show="f._logoUrl" :src="f._logoUrl" @error="f._logoUrl = null" :alt="f.airline">
+                            <span x-show="!f._logoUrl" class="logo-fallback" :style="{background: f._color, color: f._colorText}" x-text="initials(f.airline)"></span>
+                          </div>
+                          <div class="fd-end">
+                            <div class="fd-time" :class="{late: f._depLate}" x-text="f._dep"></div>
+                            <div class="fd-code" x-text="f.from_airport.iata"></div>
+                          </div>
+                          <div class="fd-mid">
+                            <div class="fd-dur" x-text="durLabel(f)"></div>
+                            <div class="fd-line"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21 16v-2l-8-5V3.500a1.500 1.500 0 0 0-3 0V9l-8 5v2l8-2.500V19l-2 1.500V22l3.500-1 3.500 1v-1.500L13 19v-5.500z" transform="rotate(90 12 12)"/></svg></div>
+                            <div class="fd-direct">Direct</div>
+                          </div>
+                          <div class="fd-end">
+                            <div class="fd-time" :class="{late: f._arrLate}"><span x-text="f._arr"></span><sup x-show="f._nextDay" x-text="f._dayText"></sup></div>
+                            <div class="fd-code" x-text="f.to_airport.iata"></div>
+                          </div>
+                          <button type="button" class="fd-toggle" @click="open = !open" :aria-expanded="open" aria-label="Show or hide flight details">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.200" stroke-linecap="round" stroke-linejoin="round" :class="{flip: !open}" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg>
+                          </button>
+                        </div>
+                      </div>
+                      <div class="fd-body" x-show="open">
+                        <div class="fd-sub">
+                          <span class="fd-sub-logo"><img x-show="f._logoUrl" :src="f._logoUrl" alt=""><span x-show="!f._logoUrl" class="logo-fallback" :style="{background: f._color, color: f._colorText}" x-text="initials(f.airline)"></span></span>
+                          <span x-text="f.airline + (f.flight_number ? ' ' + f.flight_number : '')"></span>
+                        </div>
+                        <div class="fd-timeline">
+                          <div class="fd-stop">
+                            <span class="fd-t" :class="{struck: f._depLate}" x-text="f.departure_time || f._dep"></span>
+                            <span class="fd-place"><b x-text="f.from_airport.iata"></b> <span x-text="f.from_airport.name"></span></span>
+                          </div>
+                          <div class="fd-bubble-row">
+                            <span class="fd-bubble">
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                              <span x-text="(f._durText ? f._durText + ' \u00b7 ' : '') + fmtDist(f.distance_km)"></span>
+                            </span>
+                          </div>
+                          <div class="fd-stop">
+                            <span class="fd-t"><span :class="{struck: f._arrLate}" x-text="f.arrival_time || f._arr"></span><sup x-show="f._nextDay" x-text="f._dayText"></sup></span>
+                            <span class="fd-place"><b x-text="f.to_airport.iata"></b> <span x-text="f.to_airport.name"></span></span>
+                          </div>
+                        </div>
+                        <div class="fd-foot">
+                          <span><b>Arrives:</b> <span x-text="arrives(f)"></span></span>
+                          <span class="fd-sep">|</span>
+                          <span><b>Journey duration:</b> <span x-text="flightTime(f)"></span></span>
+                        </div>
+                      </div>
+                    </div>
+                  <div class="fd-map-section">
+                    <h2 class="fd-title">Flight Map</h2>
+                    <div class="fd-map" id="trip-map"></div>
+                  </div>
+                </aside>
+
+                <div class="detail-main">
+                  <section class="form-card">
+                    <h3 class="settings-section-title">Flight</h3>
+                    <dl class="facts">
+                      <template x-for="row in flightFacts" :key="row[0]"><div><dt x-text="row[0]"></dt><dd x-text="row[1]"></dd></div></template>
+                    </dl>
+                  </section>
+                  <section class="form-card">
+                    <h3 class="settings-section-title">Schedule</h3>
+                    <dl class="facts">
+                      <template x-for="row in scheduleFacts" :key="row[0]"><div><dt x-text="row[0]"></dt><dd :class="{late: row[2]}" x-text="row[1]"></dd></div></template>
+                    </dl>
+                  </section>
+                  <section class="form-card">
+                    <h3 class="settings-section-title">Route</h3>
+                    <dl class="facts">
+                      <template x-for="row in routeFacts" :key="row[0]"><div><dt x-text="row[0]"></dt><dd x-text="row[1]"></dd></div></template>
+                    </dl>
+                  </section>
+                  <section class="form-card">
+                    <h3 class="settings-section-title">Seat &amp; travelling companions</h3>
+                    <dl class="facts">
+                      <template x-for="row in seatFacts" :key="row[0]"><div><dt x-text="row[0]"></dt><dd x-text="row[1]"></dd></div></template>
+                    </dl>
+                  </section>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+
+      <!-- ================================ TRIP DETAILS =============================== -->
+      <template x-if="route==='trip'">
+        <div class="detail" x-data="tripDetail(params.id || '')" x-init="load()">
+          <a href="#/" class="back-link">&larr; Back to flights</a>
+          <template x-if="error"><p class="form-error" x-text="error"></p></template>
+          <template x-if="loading && !error"><p class="form-hint">Loading&hellip;</p></template>
+          <template x-if="!loading && item">
+            <div>
+              <div class="detail-head">
+                <div class="detail-head-text">
+                  <h1 class="h1" style="margin:0;" x-text="title"></h1>
+                  <div class="form-hint" x-text="subtitle"></div>
+                </div>
+                <div class="detail-actions">
+                  <a class="btn btn-navy" :href="'#/add?id=' + item.key">Edit trip</a>
+                  <button type="button" class="btn btn-danger" @click="del()">Delete trip</button>
+                </div>
+              </div>
+
+              <div class="detail-split">
+                <aside class="fd-panel">
+                  <h2 class="fd-title">Flight Details</h2>
+                  <template x-for="(section, si) in sections" :key="section.id">
+                    <div>
+                      <div class="fd-dir"><span><b x-text="section.label"></b> <span class="fd-date" x-text="fmtDayDate(section.legs[0].date)"></span></span><small x-show="si === 0">all times are local</small></div>
+                      <template x-if="section.legs.length === 1">
+                      <div>
+                      <template x-for="(l, i) in section.legs" :key="l.id">
+                        <div>
+                          <div class="fd-card" x-data="{open: true}">
+                      <div class="fd-top">
+                        <div class="fd-airline"><b x-text="l.airline"></b><span x-text="(l.flight_number || l.aircraft_type) ? ' \u00b7 ' + [l.flight_number, l.aircraft_type].filter(Boolean).join(' \u00b7 ') : ''"></span></div>
+                        <div class="fd-row">
+                          <div class="fd-logo">
+                            <img x-show="l._logoUrl" :src="l._logoUrl" @error="l._logoUrl = null" :alt="l.airline">
+                            <span x-show="!l._logoUrl" class="logo-fallback" :style="{background: l._color, color: l._colorText}" x-text="initials(l.airline)"></span>
+                          </div>
+                          <div class="fd-end">
+                            <div class="fd-time" :class="{late: l._depLate}" x-text="l._dep"></div>
+                            <div class="fd-code" x-text="l.from_airport.iata"></div>
+                          </div>
+                          <div class="fd-mid">
+                            <div class="fd-dur" x-text="durLabel(l)"></div>
+                            <div class="fd-line"><svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21 16v-2l-8-5V3.500a1.500 1.500 0 0 0-3 0V9l-8 5v2l8-2.500V19l-2 1.500V22l3.500-1 3.500 1v-1.500L13 19v-5.500z" transform="rotate(90 12 12)"/></svg></div>
+                            <div class="fd-direct" x-show="!hasStopover">Direct</div>
+                          </div>
+                          <div class="fd-end">
+                            <div class="fd-time" :class="{late: l._arrLate}"><span x-text="l._arr"></span><sup x-show="l._nextDay" x-text="l._dayText"></sup></div>
+                            <div class="fd-code" x-text="l.to_airport.iata"></div>
+                          </div>
+                          <button type="button" class="fd-toggle" @click="open = !open" :aria-expanded="open" aria-label="Show or hide flight details">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.200" stroke-linecap="round" stroke-linejoin="round" :class="{flip: !open}" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg>
+                          </button>
+                        </div>
+                      </div>
+                      <div class="fd-body" x-show="open">
+                        <div class="fd-sub">
+                          <span class="fd-sub-logo"><img x-show="l._logoUrl" :src="l._logoUrl" alt=""><span x-show="!l._logoUrl" class="logo-fallback" :style="{background: l._color, color: l._colorText}" x-text="initials(l.airline)"></span></span>
+                          <span x-text="l.airline + (l.flight_number ? ' ' + l.flight_number : '')"></span>
+                        </div>
+                        <div class="fd-timeline">
+                          <div class="fd-stop">
+                            <span class="fd-t" :class="{struck: l._depLate}" x-text="l.departure_time || l._dep"></span>
+                            <span class="fd-place"><b x-text="l.from_airport.iata"></b> <span x-text="l.from_airport.name"></span></span>
+                          </div>
+                          <div class="fd-bubble-row">
+                            <span class="fd-bubble">
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                              <span x-text="(l._durText ? l._durText + ' \u00b7 ' : '') + fmtDist(l.distance_km)"></span>
+                            </span>
+                          </div>
+                          <div class="fd-stop">
+                            <span class="fd-t"><span :class="{struck: l._arrLate}" x-text="l.arrival_time || l._arr"></span><sup x-show="l._nextDay" x-text="l._dayText"></sup></span>
+                            <span class="fd-place"><b x-text="l.to_airport.iata"></b> <span x-text="l.to_airport.name"></span></span>
+                          </div>
+                        </div>
+                        <div class="fd-foot">
+                          <span><b>Arrives:</b> <span x-text="arrives(l)"></span></span>
+                          <span class="fd-sep">|</span>
+                          <span><b>Journey duration:</b> <span x-text="flightTime(l)"></span></span>
+                        </div>
+                      </div>
+                    </div>
+                        </div>
+                      </template>
+                      </div>
+                      </template>
+                      <template x-if="section.legs.length > 1">
+                        <div class="fd-card" x-data="{open: true, j: journeyCard(section)}">
+                          <div class="fd-top">
+                            <div class="fd-airline"><b x-text="j.airlines"></b></div>
+                            <div class="fd-row">
+                              <div class="fd-logo-stack" :class="'n' + j.logos.length" :title="j.airlines">
+                                <template x-for="lg in j.logos" :key="lg.airline">
+                                  <span class="fd-logo-chip">
+                                    <img x-show="lg.url" :src="lg.url" @error="lg.url = null" :alt="lg.airline">
+                                    <span x-show="!lg.url" class="logo-fallback" :style="{background: lg.color, color: lg.colorText}" x-text="initials(lg.airline)"></span>
+                                  </span>
+                                </template>
+                              </div>
+                              <div class="fd-end">
+                                <div class="fd-time" :class="{late: j.first._depLate}" x-text="j.first._dep"></div>
+                                <div class="fd-code" x-text="j.first.from_airport.iata"></div>
+                              </div>
+                              <div class="fd-mid">
+                                <div class="fd-dur" x-text="j.durText"></div>
+                                <div class="fd-line fd-line-stops">
+                                  <template x-for="n in j.stops" :key="n"><span class="stop-dot"></span></template>
+                                  <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21 16v-2l-8-5V3.500a1.500 1.500 0 0 0-3 0V9l-8 5v2l8-2.500V19l-2 1.500V22l3.500-1 3.500 1v-1.500L13 19v-5.500z" transform="rotate(90 12 12)"/></svg>
+                                </div>
+                                <div class="fd-stops-text" x-text="j.stopsCount"></div>
+                                <div class="fd-stops-codes" x-text="j.stopCodes"></div>
+                              </div>
+                              <div class="fd-end">
+                                <div class="fd-time" :class="{late: j.last._arrLate}"><span x-text="j.last._arr"></span><sup x-show="j.dayText" x-text="j.dayText"></sup></div>
+                                <div class="fd-code" x-text="j.last.to_airport.iata"></div>
+                              </div>
+                              <button type="button" class="fd-toggle" @click="open = !open" :aria-expanded="open" aria-label="Show or hide flight details">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.200" stroke-linecap="round" stroke-linejoin="round" :class="{flip: !open}" aria-hidden="true"><path d="m6 15 6-6 6 6"/></svg>
+                              </button>
+                            </div>
+                          </div>
+                          <div class="fd-body fd-journey" x-show="open">
+                            <template x-for="(l, i) in section.legs" :key="l.id">
+                              <div>
+                                <template x-if="i > 0 && connectInfo(section.legs[i - 1], l)">
+                                  <div class="fd-connect">
+                                    <span class="fd-connect-dur" x-text="connectInfo(section.legs[i - 1], l).dur"></span>
+                                    <span x-text="connectInfo(section.legs[i - 1], l).label"></span>
+                                    <b x-show="connectInfo(section.legs[i - 1], l).long">Long wait</b>
+                                  </div>
+                                </template>
+                                <div class="fd-leg">
+                                  <div class="fd-sub">
+                                    <span class="fd-sub-logo"><img x-show="l._logoUrl" :src="l._logoUrl" alt=""><span x-show="!l._logoUrl" class="logo-fallback" :style="{background: l._color, color: l._colorText}" x-text="initials(l.airline)"></span></span>
+                                    <span x-text="l.airline + (l.flight_number ? ' ' + l.flight_number : '') + (l.aircraft_type ? ' | ' + l.aircraft_type : '')"></span>
+                                  </div>
+                                  <div class="fd-timeline">
+                                    <div class="fd-stop">
+                                      <span class="fd-t" :class="{struck: l._depLate}" x-text="l.departure_time || l._dep"></span>
+                                      <span class="fd-place"><b x-text="l.from_airport.iata"></b> <span x-text="l.from_airport.name"></span></span>
+                                    </div>
+                                    <div class="fd-bubble-row">
+                                      <span class="fd-bubble">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+                                        <span x-text="(l._durText ? l._durText + ' \u00b7 ' : '') + fmtDist(l.distance_km)"></span>
+                                      </span>
+                                    </div>
+                                    <div class="fd-stop">
+                                      <span class="fd-t"><span :class="{struck: l._arrLate}" x-text="l.arrival_time || l._arr"></span><sup x-show="l._dayText && l._dayOffset !== 0" x-text="l._dayText"></sup></span>
+                                      <span class="fd-place"><b x-text="l.to_airport.iata"></b> <span x-text="l.to_airport.name"></span></span>
+                                    </div>
+                                  </div>
+                                </div>
+                              </div>
+                            </template>
+                            <div class="fd-foot">
+                              <span><b>Arrives:</b> <span x-text="j.arrives"></span></span>
+                              <span class="fd-sep">|</span>
+                              <span><b>Journey duration:</b> <span x-text="j.durationText"></span></span>
+                            </div>
+                          </div>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+                  <div class="fd-map-section">
+                    <h2 class="fd-title">Flight Map</h2>
+                    <div class="fd-map" id="trip-map"></div>
+                  </div>
+                </aside>
+
+                <div class="detail-main">
+                  <section class="form-card">
+                    <h3 class="settings-section-title">Trip Summary</h3>
+                    <dl class="facts facts-wide">
+                      <template x-for="row in summaryFacts" :key="row[0]"><div><dt x-text="row[0]"></dt><dd x-text="row[1]"></dd></div></template>
+                    </dl>
+                  </section>
+                  <template x-for="section in sections" :key="section.id">
+                    <section class="form-card">
+                      <h3 class="settings-section-title" x-text="detailsTitle(section)"></h3>
+                      <template x-for="(l, i) in section.legs" :key="l.id">
+                        <div class="leg-block">
+                          <template x-if="section.legs.length > 1">
+                            <h4 class="leg-subtitle" x-text="'Flight ' + (i + 1) + ': ' + l.from_airport.iata + ' \u2192 ' + l.to_airport.iata"></h4>
+                          </template>
+                          <dl class="facts facts-wide">
+                            <template x-for="row in detailRows(l)" :key="row[0]"><div><dt x-text="row[0]"></dt><dd :class="{late: row[2]}" x-text="row[1]"></dd></div></template>
+                          </dl>
+                        </div>
+                      </template>
+                    </section>
+                  </template>
+                  <section class="form-card">
+                    <h3 class="settings-section-title">Flight &amp; Trip Times</h3>
+                    <div class="times-table">
+                      <div class="times-head"><span></span><span>Booked</span><span>Actual</span></div>
+                      <template x-for="block in timeBlocks" :key="block.title">
+                        <div class="times-block">
+                          <div class="times-title" x-text="block.title"></div>
+                          <template x-for="row in block.rows" :key="row[0]">
+                            <div class="times-row"><span x-text="row[0]"></span><span x-text="row[1]"></span><span x-text="hasActualTimes ? row[2] : '\u2014'"></span></div>
+                          </template>
+                        </div>
+                      </template>
+                    </div>
+                    <template x-if="timesEstimated"><p class="form-hint warn" style="margin:12px 0 0;">Some airports have no time zone saved, so their durations are estimated from longitude and may be out by an hour or more.</p></template>
+                  </section>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+
+      <!-- ================================ ROUTE MAP ================================ -->
+      <template x-if="route==='map'">
+        <div x-data="mapView()" x-init="load()">
+          <div class="page-header">
+            <h1 class="page-title"><span class="eyebrow">Route Atlas</span>Where You've Flown</h1>
+          </div>
+          <template x-if="error"><p class="form-error" x-text="error"></p></template>
+          <template x-if="loading && !error"><p class="form-hint">Loading&hellip;</p></template>
+          <template x-if="!loading && routes.length === 0">
+            <div class="empty-state">No routes to plot yet &mdash; log a flight to see it appear here.</div>
+          </template>
+          <template x-if="!loading && routes.length > 0">
+            <div class="year-select-wrap form-field">
+              <label for="map-year-select">Year</label>
+              <select id="map-year-select" x-model="activeYear" @change="drawRoutes()">
+                <option value="__all__" x-text="'All years (' + routes.length + (routes.length === 1 ? ' flight' : ' flights') + ')'"></option>
+                <template x-for="yg in yearGroups" :key="yg.year">
+                  <option :value="yg.year" x-text="yg.year + ' (' + yg.flights.length + (yg.flights.length === 1 ? ' flight' : ' flights') + ')'"></option>
+                </template>
+              </select>
+            </div>
+          </template>
+          <div class="map-wrap" id="map" x-show="!loading && routes.length > 0" style="display:none;"></div>
+        </div>
+      </template>
+
+      <!-- ================================ STATISTICS =============================== -->
+      <template x-if="route==='stats'">
+        <div x-data="statsView()" x-init="load()">
+          <div class="page-header">
+            <h1 class="page-title"><span class="eyebrow">Overview</span>Statistics</h1>
+          </div>
+          <template x-if="error"><p class="form-error" x-text="error"></p></template>
+          <template x-if="loading && !error"><p class="form-hint">Loading&hellip;</p></template>
+          <template x-if="!loading">
+            <div>
+              <div class="stat-strip">
+                <div class="split-flap"><div class="value" x-text="s.total_flights"></div><div class="label">Total Flights</div></div>
+                <div class="split-flap"><div class="value" x-text="fmtTotalDist()"></div><div class="label" x-text="'Distance (' + unit + ')'"></div></div>
+                <div class="split-flap"><div class="value" x-text="s.unique_airports"></div><div class="label">Airports Visited</div></div>
+                <div class="split-flap"><div class="value" x-text="s.unique_countries"></div><div class="label">Countries Visited</div></div>
+              </div>
+              <div class="stat-strip">
+                <div class="split-flap"><div class="value" x-text="s.unique_routes"></div><div class="label">Unique Routes</div></div>
+                <div class="split-flap"><div class="value" x-text="s.distinct_airlines"></div><div class="label">Airlines Flown</div></div>
+                <div class="split-flap"><div class="value" x-text="s.distinct_aircraft"></div><div class="label">Aircraft Types</div></div>
+                <div class="split-flap"><div class="value" x-text="s.on_time_pct === null ? '—' : s.on_time_pct + '%'"></div><div class="label">On-Time Rate</div></div>
+                <div class="split-flap"><div class="value" x-text="s.longest_flight ? fmtDist(s.longest_flight) : '—'"></div><div class="label" x-text="'Longest' + (s.longest_flight ? ' (' + s.longest_flight.label + ')' : '')"></div></div>
+                <div class="split-flap"><div class="value" x-text="s.shortest_flight ? fmtDist(s.shortest_flight) : '—'"></div><div class="label" x-text="'Shortest' + (s.shortest_flight ? ' (' + s.shortest_flight.label + ')' : '')"></div></div>
+                <div class="split-flap"><div class="value" x-text="s.first_flight ? s.first_flight.date : '—'"></div><div class="label" x-text="'First Flight' + (s.first_flight ? ' (' + s.first_flight.label + ')' : '')"></div></div>
+                <div class="split-flap"><div class="value" x-text="s.longest_streak"></div><div class="label">Year Streak</div></div>
+              </div>
+
+              <div class="toggle-pill">
+                <button type="button" :class="{active: page==='airlines'}" @click="page='airlines'">Airlines &amp; Aircraft</button>
+                <button type="button" :class="{active: page==='airports'}" @click="page='airports'">Airports</button>
+                <button type="button" :class="{active: page==='routes'}" @click="page='routes'">Routes</button>
+                <button type="button" :class="{active: page==='seatclass'}" @click="page='seatclass'">Seat Class</button>
+                <button type="button" :class="{active: page==='punctuality'}" @click="page='punctuality'">Punctuality</button>
+                <button type="button" :class="{active: page==='seasonality'}" @click="page='seasonality'">Seasonality</button>
+                <button type="button" :class="{active: page==='companions'}" @click="page='companions'">Companions</button>
+              </div>
+              <div class="toggle-pill metric-toggle">
+                <button type="button" :class="{active: metric==='flights'}" @click="metric='flights'">Flights</button>
+                <button type="button" :class="{active: metric==='distance'}" @click="metric='distance'">Distance</button>
+              </div>
+
+              <template x-if="page==='airlines'">
+                <div class="chart-grid">
+                  <div class="chart-card"><h3>By Airline</h3>
+                    <template x-if="!s.by_airline.length"><p class="form-hint">No data yet.</p></template>
+                    <template x-for="row in s.by_airline.slice(0,8)" :key="row.label"><div class="breakdown-row logo-with-label"><span class="breakdown-label"><img x-show="airlineLogo(row.label)" :src="airlineLogo(row.label)" @error="$el.style.display='none'" class="airline-logo" :alt="row.label" loading="lazy"><span x-text="row.label"></span></span><div class="breakdown-bar-track"><div class="breakdown-bar-fill" :style="{width: pct(val(row), s.by_airline) + '%'}"></div></div><span x-text="fmtVal(row)"></span></div></template>
+                  </div>
+                  <div class="chart-card"><h3>By Aircraft Type</h3>
+                    <template x-if="!s.by_aircraft.length"><p class="form-hint">No data yet.</p></template>
+                    <template x-for="row in s.by_aircraft.slice(0,8)" :key="row.label"><div class="breakdown-row"><span x-text="row.label"></span><div class="breakdown-bar-track"><div class="breakdown-bar-fill" :style="{width: pct(val(row), s.by_aircraft) + '%'}"></div></div><span x-text="fmtVal(row)"></span></div></template>
+                  </div>
+                  <div class="chart-card"><h3>By Aircraft Manufacturer</h3>
+                    <template x-if="!s.by_manufacturer.length"><p class="form-hint">No data yet.</p></template>
+                    <template x-for="row in s.by_manufacturer.slice(0,8)" :key="row.label"><div class="breakdown-row logo-with-label"><span class="breakdown-label"><img x-show="manufacturerLogo(row.label)" :src="manufacturerLogo(row.label)" @error="$el.style.display='none'" class="airline-logo" :alt="row.label" loading="lazy"><span x-text="row.label"></span></span><div class="breakdown-bar-track"><div class="breakdown-bar-fill" :style="{width: pct(val(row), s.by_manufacturer) + '%'}"></div></div><span x-text="fmtVal(row)"></span></div></template>
+                  </div>
+                  <div class="chart-card"><h3>By Year</h3>
+                    <template x-if="!s.by_year.length"><p class="form-hint">No data yet.</p></template>
+                    <div class="bar-chart">
+                      <template x-for="row in [...s.by_year].sort((a,b)=>a.label.localeCompare(b.label))" :key="row.label">
+                        <div class="bar-col">
+                          <div class="bar-value" x-text="fmtVal(row)"></div>
+                          <div class="bar-track"><div class="bar-fill" :style="{height: pct(val(row), s.by_year) + '%'}"></div></div>
+                          <div class="bar-label" x-text="row.label"></div>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <template x-if="page==='airports'">
+                <div class="chart-grid">
+                  <div class="chart-card"><h3>Departures from Home Country Airports</h3>
+                    <template x-if="!s.home_country"><p class="form-hint">Set your home country in Settings to see this breakdown.</p></template>
+                    <template x-if="s.home_country && !s.by_departure_home_country_airport.length"><p class="form-hint">No data yet.</p></template>
+                    <template x-for="row in s.by_departure_home_country_airport" :key="row.label"><div class="breakdown-row"><span x-text="row.label"></span><div class="breakdown-bar-track"><div class="breakdown-bar-fill" :style="{width: pct(val(row), s.by_departure_home_country_airport) + '%'}"></div></div><span x-text="fmtVal(row)"></span></div></template>
+                  </div>
+                  <div class="chart-card"><h3>Arrivals at International Airports</h3>
+                    <template x-if="!s.home_country"><p class="form-hint">Set your home country in Settings to see this breakdown.</p></template>
+                    <template x-if="s.home_country && !s.by_arrival_international_airport.length"><p class="form-hint">No data yet.</p></template>
+                    <template x-for="row in s.by_arrival_international_airport" :key="row.label"><div class="breakdown-row"><span x-text="row.label"></span><div class="breakdown-bar-track"><div class="breakdown-bar-fill" :style="{width: pct(val(row), s.by_arrival_international_airport) + '%'}"></div></div><span x-text="fmtVal(row)"></span></div></template>
+                  </div>
+                </div>
+              </template>
+
+              <template x-if="page==='routes'">
+                <div class="chart-grid">
+                  <div class="chart-card"><h3>Top Routes</h3>
+                    <template x-if="!s.by_route.length"><p class="form-hint">No data yet.</p></template>
+                    <template x-for="row in s.by_route.slice(0,10)" :key="row.label"><div class="breakdown-row"><span x-text="row.label"></span><div class="breakdown-bar-track"><div class="breakdown-bar-fill" :style="{width: pct(val(row), s.by_route) + '%'}"></div></div><span x-text="fmtVal(row)"></span></div></template>
+                  </div>
+                  <div class="chart-card"><h3>Domestic vs International</h3>
+                    <div class="donut-wrap">
+                      <div class="donut" :style="{background: donutGradient(s.by_trip_type)}"><div class="donut-hole"><div class="donut-total" x-text="donutTotalLabel(s.by_trip_type)"></div><div class="donut-total-label">Total</div></div></div>
+                      <div class="donut-legend">
+                        <template x-for="(row,i) in s.by_trip_type" :key="row.label"><div class="donut-legend-row"><span class="donut-swatch" :style="{background: donutColor(i)}"></span><span x-text="row.label"></span><span class="donut-legend-value" x-text="fmtVal(row)"></span></div></template>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <template x-if="page==='seatclass'">
+                <div class="chart-grid single">
+                  <div class="chart-card"><h3>By Seat Class</h3>
+                    <template x-if="!s.by_seat_class.length"><p class="form-hint">No data yet.</p></template>
+                    <div class="donut-wrap" x-show="s.by_seat_class.length">
+                      <div class="donut" :style="{background: donutGradient(s.by_seat_class)}"><div class="donut-hole"><div class="donut-total" x-text="donutTotalLabel(s.by_seat_class)"></div><div class="donut-total-label">Total</div></div></div>
+                      <div class="donut-legend">
+                        <template x-for="(row,i) in s.by_seat_class" :key="row.label"><div class="donut-legend-row"><span class="donut-swatch" :style="{background: donutColor(i)}"></span><span x-text="row.label"></span><span class="donut-legend-value" x-text="fmtVal(row)"></span></div></template>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <template x-if="page==='punctuality'">
+                <div class="chart-grid">
+                  <div class="chart-card"><h3>On Time vs Delayed</h3>
+                    <div class="donut-wrap">
+                      <div class="donut" :style="{background: donutGradient(s.by_punctuality)}"><div class="donut-hole"><div class="donut-total" x-text="donutTotalLabel(s.by_punctuality)"></div><div class="donut-total-label">Total</div></div></div>
+                      <div class="donut-legend">
+                        <template x-for="(row,i) in s.by_punctuality" :key="row.label"><div class="donut-legend-row"><span class="donut-swatch" :style="{background: donutColor(i)}"></span><span x-text="row.label"></span><span class="donut-legend-value" x-text="fmtVal(row)"></span></div></template>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="chart-card"><h3>Delays by Reason</h3>
+                    <template x-if="!s.by_delay_reason.length"><p class="form-hint">No delays logged &mdash; nice!</p></template>
+                    <template x-for="row in s.by_delay_reason" :key="row.label"><div class="breakdown-row"><span x-text="row.label"></span><div class="breakdown-bar-track"><div class="breakdown-bar-fill" :style="{width: pct(val(row), s.by_delay_reason) + '%'}"></div></div><span x-text="fmtVal(row)"></span></div></template>
+                  </div>
+                </div>
+              </template>
+
+              <template x-if="page==='seasonality'">
+                <div class="chart-grid">
+                  <div class="chart-card"><h3>By Month</h3>
+                    <div class="bar-chart">
+                      <template x-for="row in s.by_month" :key="row.label">
+                        <div class="bar-col">
+                          <div class="bar-value" x-text="fmtVal(row)"></div>
+                          <div class="bar-track"><div class="bar-fill" :style="{height: pct(val(row), s.by_month) + '%'}"></div></div>
+                          <div class="bar-label" x-text="row.label"></div>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+                  <div class="chart-card"><h3>By Day of Week</h3>
+                    <div class="bar-chart">
+                      <template x-for="row in s.by_weekday" :key="row.label">
+                        <div class="bar-col">
+                          <div class="bar-value" x-text="fmtVal(row)"></div>
+                          <div class="bar-track"><div class="bar-fill" :style="{height: pct(val(row), s.by_weekday) + '%'}"></div></div>
+                          <div class="bar-label" x-text="row.label"></div>
+                        </div>
+                      </template>
+                    </div>
+                  </div>
+                </div>
+              </template>
+
+              <template x-if="page==='companions'">
+                <div class="chart-grid single">
+                  <div class="chart-card"><h3>Travel Companions</h3>
+                    <template x-if="!s.by_companion.length"><p class="form-hint">No companions logged on any flights yet.</p></template>
+                    <template x-for="row in s.by_companion" :key="row.label"><div class="breakdown-row"><span x-text="row.label"></span><div class="breakdown-bar-track"><div class="breakdown-bar-fill" :style="{width: pct(val(row), s.by_companion) + '%'}"></div></div><span x-text="fmtVal(row)"></span></div></template>
+                  </div>
+                </div>
+              </template>
+            </div>
+          </template>
+        </div>
+      </template>
+
+      <!-- ============================ LOG / EDIT A FLIGHT =========================== -->
+      <template x-if="route==='add'">
+        <div x-data="flightForm(params.id || '')" x-init="load()">
+          <div class="page-header">
+            <h1 class="page-title"><span class="eyebrow" x-text="editId ? 'Edit Entry' : 'New Entry'"></span><span x-text="editId ? 'Edit Trip or Flight' : 'Log a Flight'"></span></h1>
+          </div>
+          <form @submit.prevent="save()">
+            <div class="form-card">
+              <h3 class="settings-section-title">What kind of journey?</h3>
+              <div class="toggle-pill" style="margin-top:4px;">
+                <button type="button" :class="{active: type==='oneway'}" @click="setType('oneway')">One way</button>
+                <button type="button" :class="{active: type==='return'}" @click="setType('return')">Return</button>
+              </div>
+              <p class="form-hint" x-text="type === 'return' ? 'Log the flights out and the flights back. Add extra flights to either journey if you changed planes.' : 'A single flight, or a one-way journey with connections.'"></p>
+            </div>
+
+            <template x-for="dir in dirs" :key="dir">
+              <section class="leg-section">
+                <h2 class="leg-section-title" x-text="dirTitle(dir)"></h2>
+                <p class="form-hint" style="margin:-6px 0 12px;" x-text="dirHint(dir)"></p>
+
+                <template x-for="(leg, i) in legs[dir]" :key="leg._k">
+                  <div class="form-card leg-card">
+                    <div class="leg-head">
+                      <span class="leg-badge" x-text="legTitle(dir, i)"></span>
+                      <button type="button" class="link-btn" x-show="legs[dir].length > 1" @click="removeLeg(dir, i)">Remove</button>
+                    </div>
+                    <h4 class="leg-sub">Flight Details</h4>
+                    <div class="form-grid" style="grid-template-columns: repeat(3, 1fr);">
+                      <template x-for="sd in ['from','to']" :key="sd">
+                        <div class="form-field-wrap" @click.outside="isOpen(leg._k + sd) && closeDD()">
+                          <div class="form-field ff-combo" :class="{open: isOpen(leg._k + sd)}">
+                            <label x-text="sd === 'from' ? 'From' : 'To'"></label>
+                            <input x-model="leg.ui[sd].query" @input="searchAirport(leg, sd); openDD(leg._k + sd)" @focus="openDD(leg._k + sd)"
+                                   @keydown="ddKey($event, airportOptions(leg, sd), (x) => pickAirport(leg, sd, x))"
+                                   placeholder="Country, city or airport" autocomplete="off" required role="combobox" :aria-expanded="isOpen(leg._k + sd)">
+                            <button type="button" class="ff-clear" x-show="leg.ui[sd].query" @click="clearAirport(leg, sd)" aria-label="Clear"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button>
+                          </div>
+                          <ul class="dd-list" x-show="isOpen(leg._k + sd) && airportOptions(leg, sd).length" role="listbox">
+                            <template x-for="(x, ix) in airportOptions(leg, sd)" :key="x.iata">
+                              <li class="dd-item" :class="{hi: ix === hi}" role="option" @mousedown.prevent="pickAirport(leg, sd, x)" @mousemove="hi = ix">
+                                <svg class="dd-ico" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21 16v-2l-8-5V3.500a1.500 1.500 0 0 0-3 0V9l-8 5v2l8-2.500V19l-2 1.500V22l3.500-1 3.500 1v-1.500L13 19v-5.500z"/></svg>
+                                <span class="dd-text"><span class="dd-main" x-html="hl(airportLabel(x), leg.ui[sd].query)"></span><span class="dd-sub" x-text="airportSub(x)"></span></span>
+                              </li>
+                            </template>
+                          </ul>
+                          <template x-if="leg.ui[sd].query.trim().length >= 2 && leg.ui[sd].options.length === 0 && !leg.ui[sd].resolved">
+                            <div style="margin-top:4px;">
+                              <button type="button" class="btn btn-sm" @click="leg.ui[sd].addOpen = !leg.ui[sd].addOpen">Can't find it? Add it manually</button>
+                            </div>
+                          </template>
+                          <template x-if="leg.ui[sd].addOpen">
+                            <div class="form-card" style="margin-top:8px; padding:14px;">
+                              <div class="form-grid" style="grid-template-columns:1fr 1fr;">
+                                <input placeholder="IATA code" x-model="leg.ui[sd].newAirport.iata" maxlength="3" style="text-transform:uppercase;">
+                                <input placeholder="Airport name" x-model="leg.ui[sd].newAirport.name">
+                                <input placeholder="City" x-model="leg.ui[sd].newAirport.city">
+                                <input placeholder="Country" x-model="leg.ui[sd].newAirport.country">
+                                <input placeholder="Latitude" x-model="leg.ui[sd].newAirport.lat" type="number" step="any">
+                                <input placeholder="Longitude" x-model="leg.ui[sd].newAirport.lon" type="number" step="any">
+                                <input placeholder="Time zone, e.g. Europe/London" x-model="leg.ui[sd].newAirport.tz" style="grid-column: 1 / -1;">
+                              </div>
+                              <button type="button" class="btn btn-primary" style="margin-top:10px;" @click="addAirport(leg, sd)">Save Airport</button>
+                            </div>
+                          </template>
+                        </div>
+                      </template>
+                      <div class="form-field-wrap" @click.outside="isOpen(leg._k + 'date') && closeDD()">
+                        <div class="form-field ff-select" :class="{open: isOpen(leg._k + 'date')}" tabindex="0" role="combobox" :aria-expanded="isOpen(leg._k + 'date')" @click="openDate(leg._k + 'date', leg.date)" @keydown.enter.prevent="openDate(leg._k + 'date', leg.date)" @keydown.space.prevent="openDate(leg._k + 'date', leg.date)" @keydown.escape="closeDD()">
+                          <label>Date</label>
+                          <span class="ff-value" :class="{placeholder: !leg.date}" x-text="leg.date ? fmtPickDate(leg.date) : 'Select a date'"></span>
+                          <svg class="ff-chevron" viewBox="0 0 24 24" aria-hidden="true"><rect x="3.5" y="5" width="17" height="15" rx="2.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M3.5 10h17M8 3v4M16 3v4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+                        </div>
+                        <div class="cal-pop pop-right" x-show="isOpen(leg._k + 'date')">
+                          <div class="cal-months">
+                            <template x-for="off in [0, 1]" :key="off">
+                              <div class="cal-month">
+                                <div class="cal-head"><button type="button" class="cal-nav cal-prev" @click="stepMonth(-1)" aria-label="Previous month"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button><span class="cal-title" x-text="monthView(off).title"></span><button type="button" class="cal-nav cal-next" @click="stepMonth(1)" aria-label="Next month"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 5l7 7-7 7" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg></button></div>
+                                <div class="cal-dow"><span>M</span><span>T</span><span>W</span><span>T</span><span>F</span><span>S</span><span>S</span></div>
+                                <div class="cal-grid">
+                                  <template x-for="(c, ci) in monthView(off).cells" :key="ci">
+                                    <span class="cal-cell"><button type="button" class="cal-day" x-show="c" :class="{today: c && c.today, sel: c && c.sel}" x-text="c ? c.n : ''" @click="pickDay(c)" @dblclick="pickDay(c); applyDate(leg, 'date')"></button></span>
+                                  </template>
+                                </div>
+                              </div>
+                            </template>
+                          </div>
+                          <div class="cal-foot"><span x-text="pickedDateText()"></span><span class="cal-foot-btns"><button type="button" class="btn btn-sm" @click="stepMonth(-12)">&laquo; Year</button><button type="button" class="btn btn-sm" @click="stepMonth(12)">Year &raquo;</button><button type="button" class="btn btn-primary" :disabled="!pick.sel" @click="applyDate(leg, 'date')">Apply</button></span></div>
+                        </div>
+                      </div>
+                      <div class="form-field-wrap" @click.outside="isOpen(leg._k + 'departure_time') && closeDD()">
+                        <div class="form-field ff-select ff-time" :class="{open: isOpen(leg._k + 'departure_time')}" @click="if (!isOpen(leg._k + 'departure_time')) openTime(leg._k + 'departure_time', leg.departure_time)">
+                          <label>Departure Time</label>
+                          <input x-model="leg.departure_time" @change="tidyTime(leg, 'departure_time')" @focus="if (!isOpen(leg._k + 'departure_time')) openTime(leg._k + 'departure_time', leg.departure_time)" @keydown.escape="closeDD()" @keydown.enter.prevent="tidyTime(leg, 'departure_time'); closeDD()" placeholder="HH:MM" inputmode="numeric" autocomplete="off" maxlength="5">
+                          <svg class="ff-chevron" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </div>
+                        <div class="time-pop pop-right" x-show="isOpen(leg._k + 'departure_time')">
+                          <div class="time-cols">
+                            <div><div class="time-h">Hour</div><div class="time-grid">
+                              <template x-for="h in HOURS" :key="h"><button type="button" class="time-opt" :class="{sel: pick.h === h}" x-text="h" @click="pick.h = h; if (pick.min == null) pick.min = '00'"></button></template>
+                            </div></div>
+                            <div><div class="time-h">Minute</div><div class="time-grid mins">
+                              <template x-for="mi in MINUTES" :key="mi"><button type="button" class="time-opt" :class="{sel: pick.min === mi}" x-text="mi" @click="pick.min = mi; if (pick.h == null) pick.h = '12'"></button></template>
+                            </div></div>
+                          </div>
+                          <div class="cal-foot"><span x-text="pickedTimeText()"></span><span class="cal-foot-btns"><button type="button" class="btn btn-sm" @click="clearTime(leg, 'departure_time')">Clear</button><button type="button" class="btn btn-primary" :disabled="pick.h == null" @click="applyTime(leg, 'departure_time')">Apply</button></span></div>
+                        </div>
+                      </div>
+                      <div class="form-field-wrap" @click.outside="isOpen(leg._k + 'arrival_time') && closeDD()">
+                        <div class="form-field ff-select ff-time" :class="{open: isOpen(leg._k + 'arrival_time')}" @click="if (!isOpen(leg._k + 'arrival_time')) openTime(leg._k + 'arrival_time', leg.arrival_time)">
+                          <label>Arrival Time</label>
+                          <input x-model="leg.arrival_time" @change="tidyTime(leg, 'arrival_time')" @focus="if (!isOpen(leg._k + 'arrival_time')) openTime(leg._k + 'arrival_time', leg.arrival_time)" @keydown.escape="closeDD()" @keydown.enter.prevent="tidyTime(leg, 'arrival_time'); closeDD()" placeholder="HH:MM" inputmode="numeric" autocomplete="off" maxlength="5">
+                          <svg class="ff-chevron" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </div>
+                        <div class="time-pop" x-show="isOpen(leg._k + 'arrival_time')">
+                          <div class="time-cols">
+                            <div><div class="time-h">Hour</div><div class="time-grid">
+                              <template x-for="h in HOURS" :key="h"><button type="button" class="time-opt" :class="{sel: pick.h === h}" x-text="h" @click="pick.h = h; if (pick.min == null) pick.min = '00'"></button></template>
+                            </div></div>
+                            <div><div class="time-h">Minute</div><div class="time-grid mins">
+                              <template x-for="mi in MINUTES" :key="mi"><button type="button" class="time-opt" :class="{sel: pick.min === mi}" x-text="mi" @click="pick.min = mi; if (pick.h == null) pick.h = '12'"></button></template>
+                            </div></div>
+                          </div>
+                          <div class="cal-foot"><span x-text="pickedTimeText()"></span><span class="cal-foot-btns"><button type="button" class="btn btn-sm" @click="clearTime(leg, 'arrival_time')">Clear</button><button type="button" class="btn btn-primary" :disabled="pick.h == null" @click="applyTime(leg, 'arrival_time')">Apply</button></span></div>
+                        </div>
+                      </div>
+                    </div>
+                    <h4 class="leg-sub">Airline Details</h4>
+                    <div class="form-grid" style="grid-template-columns: repeat(3, 1fr);">
+                      <div class="form-field-wrap" @click.outside="isOpen(leg._k + 'airline') && closeDD()">
+                        <div class="form-field ff-combo" :class="{open: isOpen(leg._k + 'airline')}">
+                          <label>Airline</label>
+                          <input x-model="leg.airline" @input="openDD(leg._k + 'airline')" @focus="openDD(leg._k + 'airline')" @keydown="ddKey($event, suggestions('airline', leg), (v) => pickSuggestion('airline', leg, v))" placeholder="Start typing an airline" autocomplete="off" required>
+                          <button type="button" class="ff-clear" x-show="leg.airline" @click="leg.airline = ''" aria-label="Clear"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button>
+                        </div>
+                        <ul class="dd-list" x-show="isOpen(leg._k + 'airline') && suggestions('airline', leg).length" role="listbox">
+                          <template x-for="(v, ix) in suggestions('airline', leg)" :key="v">
+                            <li class="dd-item dd-simple" :class="{hi: ix === hi}" role="option" @mousedown.prevent="pickSuggestion('airline', leg, v)" @mousemove="hi = ix"><span class="dd-text"><span class="dd-main" x-html="hl(v, leg.airline)"></span></span></li>
+                          </template>
+                        </ul>
+                      </div>
+                      <div class="form-field"><label>Flight Number</label><input x-model="leg.flight_number" placeholder="e.g. BA178"></div>
+                      <div class="form-field-wrap" @click.outside="isOpen(leg._k + 'aircraft') && closeDD()">
+                        <div class="form-field ff-combo" :class="{open: isOpen(leg._k + 'aircraft')}">
+                          <label>Aircraft Type</label>
+                          <input x-model="leg.aircraft_type" @input="openDD(leg._k + 'aircraft')" @focus="openDD(leg._k + 'aircraft')" @keydown="ddKey($event, suggestions('aircraft', leg), (v) => pickSuggestion('aircraft', leg, v))" placeholder="Start typing an aircraft type" autocomplete="off">
+                          <button type="button" class="ff-clear" x-show="leg.aircraft_type" @click="leg.aircraft_type = ''" aria-label="Clear"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7l10 10M17 7L7 17" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/></svg></button>
+                        </div>
+                        <ul class="dd-list" x-show="isOpen(leg._k + 'aircraft') && suggestions('aircraft', leg).length" role="listbox">
+                          <template x-for="(v, ix) in suggestions('aircraft', leg)" :key="v">
+                            <li class="dd-item dd-simple" :class="{hi: ix === hi}" role="option" @mousedown.prevent="pickSuggestion('aircraft', leg, v)" @mousemove="hi = ix"><span class="dd-text"><span class="dd-main" x-html="hl(v, leg.aircraft_type)"></span></span></li>
+                          </template>
+                        </ul>
+                      </div>
+                      <div class="form-field"><label>Aircraft Registration</label><input x-model="leg.aircraft_registration" placeholder="e.g. G-XWBA" maxlength="12" style="text-transform:uppercase;" autocomplete="off"></div>
+                    </div>
+                    <h4 class="leg-sub">Seating Details</h4>
+                    <div class="form-grid" style="grid-template-columns: repeat(3, 1fr);">
+                      <div class="form-field-wrap" @click.outside="isOpen(leg._k + 'seat') && closeDD()">
+                        <div class="form-field ff-select" :class="{open: isOpen(leg._k + 'seat')}" tabindex="0" role="combobox" :aria-expanded="isOpen(leg._k + 'seat')"
+                             @click="openSelect(leg._k + 'seat', selectOptions('seat'), leg[selectField('seat')])"
+                             @keydown.enter.prevent="isOpen(leg._k + 'seat') ? pickSelect('seat', leg, selectOptions('seat')[hi]) : openSelect(leg._k + 'seat', selectOptions('seat'), leg[selectField('seat')])"
+                             @keydown.space.prevent="openSelect(leg._k + 'seat', selectOptions('seat'), leg[selectField('seat')])"
+                             @keydown.arrow-down.prevent="isOpen(leg._k + 'seat') ? ddKey($event, selectOptions('seat'), () => {}) : openSelect(leg._k + 'seat', selectOptions('seat'), leg[selectField('seat')])"
+                             @keydown.arrow-up.prevent="ddKey($event, selectOptions('seat'), () => {})" @keydown.escape="closeDD()">
+                          <label>Seat Class</label>
+                          <span class="ff-value" :class="{placeholder: !leg[selectField('seat')]}" x-text="selectLabel('seat', leg)"></span>
+                          <svg class="ff-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </div>
+                        <ul class="dd-list" x-show="isOpen(leg._k + 'seat')" role="listbox">
+                          <template x-for="(o, ix) in selectOptions('seat')" :key="o.v || '_none'">
+                            <li class="dd-item dd-simple" :class="{hi: ix === hi, chosen: (leg[selectField('seat')] || '') === o.v}" role="option" @mousedown.prevent="pickSelect('seat', leg, o)" @mousemove="hi = ix"><span class="dd-text"><span class="dd-main" x-text="o.label"></span></span></li>
+                          </template>
+                        </ul>
+                      </div>
+                      <div class="form-field"><label>Seat Number</label><input x-model="leg.seat_number" placeholder="e.g. 14A"></div>
+                    </div>
+                    <h4 class="leg-sub">Delays</h4>
+                    <div class="form-grid" style="grid-template-columns: repeat(3, 1fr);">
+                      <div class="form-field-wrap" @click.outside="isOpen(leg._k + 'actual_departure_time') && closeDD()">
+                        <div class="form-field ff-select ff-time" :class="{open: isOpen(leg._k + 'actual_departure_time')}" @click="if (!isOpen(leg._k + 'actual_departure_time')) openTime(leg._k + 'actual_departure_time', leg.actual_departure_time)">
+                          <label>Actual Departure</label>
+                          <input x-model="leg.actual_departure_time" @change="tidyTime(leg, 'actual_departure_time')" @focus="if (!isOpen(leg._k + 'actual_departure_time')) openTime(leg._k + 'actual_departure_time', leg.actual_departure_time)" @keydown.escape="closeDD()" @keydown.enter.prevent="tidyTime(leg, 'actual_departure_time'); closeDD()" placeholder="HH:MM" inputmode="numeric" autocomplete="off" maxlength="5">
+                          <svg class="ff-chevron" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </div>
+                        <div class="time-pop" x-show="isOpen(leg._k + 'actual_departure_time')">
+                          <div class="time-cols">
+                            <div><div class="time-h">Hour</div><div class="time-grid">
+                              <template x-for="h in HOURS" :key="h"><button type="button" class="time-opt" :class="{sel: pick.h === h}" x-text="h" @click="pick.h = h; if (pick.min == null) pick.min = '00'"></button></template>
+                            </div></div>
+                            <div><div class="time-h">Minute</div><div class="time-grid mins">
+                              <template x-for="mi in MINUTES" :key="mi"><button type="button" class="time-opt" :class="{sel: pick.min === mi}" x-text="mi" @click="pick.min = mi; if (pick.h == null) pick.h = '12'"></button></template>
+                            </div></div>
+                          </div>
+                          <div class="cal-foot"><span x-text="pickedTimeText()"></span><span class="cal-foot-btns"><button type="button" class="btn btn-sm" @click="clearTime(leg, 'actual_departure_time')">Clear</button><button type="button" class="btn btn-primary" :disabled="pick.h == null" @click="applyTime(leg, 'actual_departure_time')">Apply</button></span></div>
+                        </div>
+                      </div>
+                      <div class="form-field-wrap" @click.outside="isOpen(leg._k + 'actual_arrival_time') && closeDD()">
+                        <div class="form-field ff-select ff-time" :class="{open: isOpen(leg._k + 'actual_arrival_time')}" @click="if (!isOpen(leg._k + 'actual_arrival_time')) openTime(leg._k + 'actual_arrival_time', leg.actual_arrival_time)">
+                          <label>Actual Arrival</label>
+                          <input x-model="leg.actual_arrival_time" @change="tidyTime(leg, 'actual_arrival_time')" @focus="if (!isOpen(leg._k + 'actual_arrival_time')) openTime(leg._k + 'actual_arrival_time', leg.actual_arrival_time)" @keydown.escape="closeDD()" @keydown.enter.prevent="tidyTime(leg, 'actual_arrival_time'); closeDD()" placeholder="HH:MM" inputmode="numeric" autocomplete="off" maxlength="5">
+                          <svg class="ff-chevron" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="2"/><path d="M12 7.5V12l3 2" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </div>
+                        <div class="time-pop pop-right" x-show="isOpen(leg._k + 'actual_arrival_time')">
+                          <div class="time-cols">
+                            <div><div class="time-h">Hour</div><div class="time-grid">
+                              <template x-for="h in HOURS" :key="h"><button type="button" class="time-opt" :class="{sel: pick.h === h}" x-text="h" @click="pick.h = h; if (pick.min == null) pick.min = '00'"></button></template>
+                            </div></div>
+                            <div><div class="time-h">Minute</div><div class="time-grid mins">
+                              <template x-for="mi in MINUTES" :key="mi"><button type="button" class="time-opt" :class="{sel: pick.min === mi}" x-text="mi" @click="pick.min = mi; if (pick.h == null) pick.h = '12'"></button></template>
+                            </div></div>
+                          </div>
+                          <div class="cal-foot"><span x-text="pickedTimeText()"></span><span class="cal-foot-btns"><button type="button" class="btn btn-sm" @click="clearTime(leg, 'actual_arrival_time')">Clear</button><button type="button" class="btn btn-primary" :disabled="pick.h == null" @click="applyTime(leg, 'actual_arrival_time')">Apply</button></span></div>
+                        </div>
+                      </div>
+                      <div class="form-field-wrap" @click.outside="isOpen(leg._k + 'delay') && closeDD()">
+                        <div class="form-field ff-select" :class="{open: isOpen(leg._k + 'delay')}" tabindex="0" role="combobox" :aria-expanded="isOpen(leg._k + 'delay')"
+                             @click="openSelect(leg._k + 'delay', selectOptions('delay'), leg[selectField('delay')])"
+                             @keydown.enter.prevent="isOpen(leg._k + 'delay') ? pickSelect('delay', leg, selectOptions('delay')[hi]) : openSelect(leg._k + 'delay', selectOptions('delay'), leg[selectField('delay')])"
+                             @keydown.space.prevent="openSelect(leg._k + 'delay', selectOptions('delay'), leg[selectField('delay')])"
+                             @keydown.arrow-down.prevent="isOpen(leg._k + 'delay') ? ddKey($event, selectOptions('delay'), () => {}) : openSelect(leg._k + 'delay', selectOptions('delay'), leg[selectField('delay')])"
+                             @keydown.arrow-up.prevent="ddKey($event, selectOptions('delay'), () => {})" @keydown.escape="closeDD()">
+                          <label>Delay Reason</label>
+                          <span class="ff-value" :class="{placeholder: !leg[selectField('delay')]}" x-text="selectLabel('delay', leg)"></span>
+                          <svg class="ff-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                        </div>
+                        <ul class="dd-list" x-show="isOpen(leg._k + 'delay')" role="listbox">
+                          <template x-for="(o, ix) in selectOptions('delay')" :key="o.v || '_none'">
+                            <li class="dd-item dd-simple" :class="{hi: ix === hi, chosen: (leg[selectField('delay')] || '') === o.v}" role="option" @mousedown.prevent="pickSelect('delay', leg, o)" @mousemove="hi = ix"><span class="dd-text"><span class="dd-main" x-text="o.label"></span></span></li>
+                          </template>
+                        </ul>
+                      </div>
+                    
+                    </div>
+                  </div>
+                </template>
+
+                <button type="button" class="btn add-leg" @click="addLeg(dir)" x-text="addLabel(dir)"></button>
+              </section>
+            </template>
+
+            <div class="form-card">
+              <div class="form-field-wrap" @click.outside="isOpen('companions') && closeDD()">
+                <div class="form-field ff-select" :class="{open: isOpen('companions')}" tabindex="0" role="combobox" :aria-expanded="isOpen('companions')"
+                     @click="isOpen('companions') ? closeDD() : openDD('companions')" @keydown.enter.prevent="isOpen('companions') ? closeDD() : openDD('companions')" @keydown.space.prevent="isOpen('companions') ? closeDD() : openDD('companions')" @keydown.escape="closeDD()">
+                  <label>Travelling With <span class="ff-note">(applies to every flight)</span></label>
+                  <span class="ff-value" :class="{placeholder: !companion_ids.length}" x-text="companionsLabel()"></span>
+                  <svg class="ff-chevron" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </div>
+                <ul class="dd-list" x-show="isOpen('companions') && companions.length" role="listbox" aria-multiselectable="true">
+                  <template x-for="o in companionOptions()" :key="o.v">
+                    <li class="dd-item dd-simple" :class="{chosen: companion_ids.includes(o.v)}" role="option" @mousedown.prevent="toggleCompanion(o)"><span class="dd-check" x-text="companion_ids.includes(o.v) ? '\u2713' : ''"></span><span class="dd-text"><span class="dd-main" x-text="o.label"></span></span></li>
+                  </template>
+                </ul>
+                <template x-if="companions.length === 0"><span class="form-hint">No companions yet &mdash; add some under Companions.</span></template>
+              </div>
+            </div>
+
+            <div class="form-card">
+              <h3 class="settings-section-title">Price</h3>
+              <div class="form-grid" style="grid-template-columns: repeat(3, 1fr);">
+                <div class="form-field ff-price"><label>Total Cost of Flights</label><span class="ff-money"><span class="ff-cur">&pound;</span><input x-model="price" inputmode="decimal" placeholder="0.00" autocomplete="off" @change="tidyPrice()"></span></div>
+              </div>
+              <template x-if="error"><div class="form-error" style="margin-top:14px;" x-text="error"></div></template>
+              <div class="form-actions">
+                <button class="btn btn-primary" type="submit" :disabled="saving" x-text="saveLabel"></button>
+                <a href="#/" class="btn">Cancel</a>
+              </div>
+            </div>
+          </form>
+        </div>
+      </template>
+
+      <!-- ============================ TRAVEL COMPANIONS ============================ -->
+      <template x-if="route==='companions'">
+        <div x-data="companionsView()" x-init="load()">
+          <div class="page-header">
+            <h1 class="page-title"><span class="eyebrow">Address Book</span>Travel Companions</h1>
+          </div>
+          <div class="form-card">
+            <h3 class="settings-section-title">Add a Companion</h3>
+            <form @submit.prevent="add()" class="form-grid">
+              <div class="form-field"><label>Name</label><input x-model="newName" required></div>
+              <div class="form-field"><label>Relationship</label><input x-model="newRelationship" placeholder="e.g. Spouse, Friend"></div>
+              <div class="form-field" style="align-self:end;"><button class="btn btn-primary" type="submit">Add</button></div>
+            </form>
+          </div>
+          <template x-if="!loading && companions.length === 0"><div class="empty-state">No travel companions yet.</div></template>
+          <template x-for="c in companions" :key="c.id">
+            <div class="form-card" style="display:flex; align-items:center; justify-content:space-between;">
+              <div><strong x-text="c.name"></strong> <span class="form-hint" x-text="c.relationship ? '(' + c.relationship + ')' : ''"></span></div>
+              <button type="button" class="btn" @click="del(c.id)">Remove</button>
+            </div>
+          </template>
+        </div>
+      </template>
+
+      <!-- ================================ SETTINGS ================================= -->
+      <template x-if="route==='settings'">
+        <div x-data="settingsView()" x-init="load()">
+          <div class="page-header">
+            <h1 class="page-title"><span class="eyebrow">Preferences</span>Settings</h1>
+          </div>
+          <div class="form-card">
+            <h3 class="settings-section-title">Units</h3>
+            <p class="form-hint" style="margin-top:-4px; margin-bottom:16px;">Used for every distance shown across the app.</p>
+            <div class="toggle-pill">
+              <button type="button" :class="{active: unit==='km'}" @click="setUnit('km')">Kilometers</button>
+              <button type="button" :class="{active: unit==='mi'}" @click="setUnit('mi')">Miles</button>
+            </div>
+          </div>
+          <div class="form-card">
+            <h3 class="settings-section-title">Home Country</h3>
+            <p class="form-hint" style="margin-top:-4px; margin-bottom:16px;">Centers the Route Map and Airport statistics on this country.</p>
+            <select x-model="homeCountry" @change="setHomeCountry()" style="max-width:320px;">
+              <option value="">Not set</option>
+              <template x-for="c in countries" :key="c.name"><option :value="c.name" x-text="c.name"></option></template>
+            </select>
+            <template x-if="saved"><p class="form-ok" style="margin-top:8px;">Saved.</p></template>
+          </div>
+          <div class="form-card">
+            <h3 class="settings-section-title">Backup &amp; Restore</h3>
+            <p class="form-hint" style="margin-top:-4px; margin-bottom:16px;">
+              Export everything (flights, companions, settings) as one JSON file, or load a previous export.
+            </p>
+            <div class="row-actions">
+              <button type="button" class="btn btn-primary" @click="exportData()">Download export</button>
+              <label class="btn" style="cursor:pointer;">Import file&hellip;
+                <input type="file" accept="application/json,.json" style="display:none;" @change="importData($event)">
+              </label>
+              <label class="form-hint" style="display:flex; align-items:center; gap:6px;">
+                <input type="checkbox" x-model="replaceOnImport"> Replace existing flights
+              </label>
+            </div>
+            <template x-if="backupMsg"><p :class="backupOk ? 'form-ok' : 'form-error'" style="margin-top:10px;" x-text="backupMsg"></p></template>
+          </div>
+        </div>
+      </template>
+
+  </main>
+</div>
+<script>
+  // If the scripts above could not load (e.g. offline), say so instead of showing a blank page.
+  window.addEventListener('load', function () {
+    if (window.Alpine) return;
+    document.body.insertAdjacentHTML('afterbegin',
+      '<p style="font-family:monospace;padding:24px;color:#e3a85c">FlightLog could not load its JavaScript libraries. ' +
+      'Check your connection (the map libraries are bundled, so this is unexpected) and reload.</p>');
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,20 @@
+# Alternative: build the image on the NAS straight from the GitHub repo
+# (Portainer > Stacks > Add stack > Repository). Slower than pulling the
+# prebuilt image, but needs no GitHub Actions or package visibility settings.
+# Compose file path to enter in Portainer: docker-compose.build.yml
+services:
+  flightlog:
+    build: .
+    container_name: flightlog
+    restart: unless-stopped
+    ports:
+      - "${FL_PORT:-8420}:3000"
+    environment:
+      TZ: Europe/London
+      FL_PASSWORD: ${FL_PASSWORD:-}
+      FL_USER: ${FL_USER:-flightlog}
+    volumes:
+      - ${FL_DATA:-flightlog-data}:/data
+
+volumes:
+  flightlog-data:

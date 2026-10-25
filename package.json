@@ -1,0 +1,12 @@
+{
+  "name": "flightlog",
+  "version": "1.0.0",
+  "description": "Self-hosted personal flight log: flight cards, route map and statistics.",
+  "private": true,
+  "license": "MIT",
+  "engines": { "node": ">=22.5" },
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning server/index.js",
+    "test": "node --test tests/server.test.mjs tests/mock-api.test.mjs tests/tools.test.mjs tests/ui.test.mjs tests/core.test.mjs"
+  }
+}

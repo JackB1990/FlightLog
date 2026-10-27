@@ -2,7 +2,9 @@
 #
 # 1. Replace YOUR_GITHUB_USERNAME below (lowercase) with your GitHub username.
 # 2. In Portainer's "Environment variables" section you can (optionally) set:
-#      FL_PASSWORD  - turns on a login prompt (username: flightlog). Strongly recommended.
+#      FL_PASSWORD  - optional: creates/keeps an account for FL_USER with this password (handy for
+#                     upgrades from older versions). You can also just create an account on the login page.
+#      FL_SIGNUPS   - set to off once your accounts exist, to stop anyone else creating one (default on)
 #      FL_PORT      - port to open on your NAS (default 8420)
 #      FL_DATA      - where to keep the database. Leave unset to use a Docker volume,
 #                     or set a dataset path such as /mnt/tank/apps/flightlog
@@ -18,6 +20,7 @@ services:
       TZ: Europe/London
       FL_PASSWORD: ${FL_PASSWORD:-}
       FL_USER: ${FL_USER:-flightlog}
+      FL_SIGNUPS: ${FL_SIGNUPS:-on}
     volumes:
       - ${FL_DATA:-flightlog-data}:/data
 

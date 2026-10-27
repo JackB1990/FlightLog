@@ -20,11 +20,16 @@ async function waitUp() {
   }
   throw new Error('server did not start');
 }
-const call = async (method, path, body) => {
-  const res = await fetch(BASE + path, { method, headers: body ? { 'Content-Type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+let cookie = '';
+const callAs = async (ck, method, path, body) => {
+  const headers = body ? { 'Content-Type': 'application/json' } : {};
+  if (ck) headers.Cookie = ck;
+  const res = await fetch(BASE + path, { method, headers, body: body ? JSON.stringify(body) : undefined });
   const text = await res.text();
-  return { status: res.status, data: text ? JSON.parse(text) : null };
+  const set = res.headers.get('set-cookie');
+  return { status: res.status, data: text ? JSON.parse(text) : null, cookie: set ? set.split(';')[0] : null, setCookie: set };
 };
+const call = (method, path, body) => callAs(cookie, method, path, body);
 
 before(async () => {
   dataDir = mkdtempSync(join(tmpdir(), 'fv-test-'));
@@ -33,6 +38,9 @@ before(async () => {
     stdio: 'ignore',
   });
   await waitUp();
+  const r = await callAs('', 'POST', '/api/auth/signup', { username: 'tester', password: 'correct-horse', distance_unit: 'mi', home_country: 'United Kingdom' });
+  assert.equal(r.status, 201);
+  cookie = r.cookie;
 });
 after(() => { proc.kill(); rmSync(dataDir, { recursive: true, force: true }); });
 
@@ -118,7 +126,7 @@ test('add a custom airport', async () => {
 test('export then import round-trips (replace mode)', async () => {
   const exp = (await call('GET', '/api/export')).data;
   assert.equal(exp.flights.length, 2);
-  const res = await fetch(BASE + '/api/import?mode=replace', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(exp) });
+  const res = await fetch(BASE + '/api/import?mode=replace', { method: 'POST', headers: { 'Content-Type': 'application/json', Cookie: cookie }, body: JSON.stringify(exp) });
   const out = await res.json();
   assert.equal(out.imported, 2);
   assert.equal(out.skipped.length, 0);
@@ -221,37 +229,81 @@ test('trips: one-way flight stays standalone, connections and returns become tri
   assert.ok(!list.some((f) => f.trip_id === tripId || f.trip_id === newKey));
 });
 
-test('an existing database from before trips is migrated in place', async () => {
+let oldPort = 0;
+async function oldDatabase(env, fn) {
   const { DatabaseSync } = await import('node:sqlite');
   const dir = mkdtempSync(join(tmpdir(), 'fl-old-'));
   const db = new DatabaseSync(join(dir, 'flightlog.db'));
   db.exec(`
     CREATE TABLE airports (iata TEXT PRIMARY KEY, icao TEXT, name TEXT NOT NULL, city TEXT, country TEXT, lat REAL NOT NULL, lon REAL NOT NULL);
     INSERT INTO airports VALUES ('LHR','EGLL','Heathrow','London','United Kingdom',51.47,-0.45),('JFK','KJFK','JFK','New York','United States',40.64,-73.78);
+    CREATE TABLE settings (id INTEGER PRIMARY KEY CHECK (id = 1), distance_unit TEXT NOT NULL DEFAULT 'km', home_country TEXT);
+    INSERT INTO settings VALUES (1, 'mi', 'United Kingdom');
     CREATE TABLE flights (id TEXT PRIMARY KEY, date TEXT NOT NULL, airline TEXT NOT NULL, flight_number TEXT, aircraft_type TEXT, seat_class TEXT, seat_number TEXT,
       from_iata TEXT NOT NULL, to_iata TEXT NOT NULL, distance_km REAL, departure_time TEXT, arrival_time TEXT, actual_departure_time TEXT, actual_arrival_time TEXT,
       delay_reason TEXT, created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')));
     INSERT INTO flights (id, date, airline, from_iata, to_iata, distance_km) VALUES ('old1','2020-01-01','BA','LHR','JFK',5540);
   `);
   db.close();
-  const port = PORT + 100;
-  const p2 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', join(root, 'server/index.js')], { env: { ...process.env, PORT: String(port), DATA_DIR: dir }, stdio: 'ignore' });
+  const port = 4200 + Math.floor(Math.random() * 3000);
+  const p2 = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', join(root, 'server/index.js')], { env: { ...process.env, PORT: String(port), DATA_DIR: dir, ...env }, stdio: 'ignore' });
   try {
     let up = false;
-    for (let i = 0; i < 50 && !up; i++) {
+    for (let i = 0; i < 150 && !up; i++) {
       try { up = (await fetch(`http://127.0.0.1:${port}/api/health`)).ok; } catch { await new Promise((r) => setTimeout(r, 100)); }
     }
     assert.ok(up);
-    const res = await (await fetch(`http://127.0.0.1:${port}/api/flights`)).json();
+    await fn(`http://127.0.0.1:${port}`);
+  } finally {
+    p2.kill();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+const post = (base, path, body, ck) => fetch(base + path, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(ck ? { Cookie: ck } : {}) }, body: JSON.stringify(body) });
+
+test('upgrade: an old database is migrated, and the old FL_USER / FL_PASSWORD login works on the login page', async () => {
+  await oldDatabase({ FL_USER: 'jack', FL_PASSWORD: 's3cret-pass' }, async (base) => {
+    assert.equal((await fetch(base + '/api/flights')).status, 401);
+    assert.equal((await post(base, '/api/auth/login', { username: 'jack', password: 'wrong' })).status, 401);
+    const login = await post(base, '/api/auth/login', { username: 'jack', password: 's3cret-pass' });
+    assert.equal(login.status, 200);
+    const ck = login.headers.get('set-cookie').split(';')[0];
+    const res = await (await fetch(base + '/api/flights', { headers: { Cookie: ck } })).json();
     assert.equal(res.flights.length, 1);
     assert.equal(res.flights[0].trip_id, null);
     assert.equal(res.flights[0].direction, 'outbound');
     assert.equal(res.flights[0].price, null, 'old databases gain the price and registration columns');
     assert.equal(res.flights[0].aircraft_registration, null);
-  } finally {
-    p2.kill();
-    rmSync(dir, { recursive: true, force: true });
-  }
+    const settings = await (await fetch(base + '/api/account/settings', { headers: { Cookie: ck } })).json();
+    assert.equal(settings.distance_unit, 'mi');
+    assert.equal(settings.home_country, 'United Kingdom');
+    // HTTP Basic still works for scripts
+    const basic = 'Basic ' + Buffer.from('jack:s3cret-pass').toString('base64');
+    assert.equal((await fetch(base + '/api/flights', { headers: { Authorization: basic } })).status, 200);
+  });
+});
+
+test('upgrade without a password: the first account created adopts the existing flights', async () => {
+  await oldDatabase({}, async (base) => {
+    const st = await (await fetch(base + '/api/auth/status')).json();
+    assert.equal(st.hasUsers, false);
+    assert.equal(st.legacyData, true);
+    const su = await post(base, '/api/auth/signup', { username: 'owner', password: 'owner-pass-1', distance_unit: 'km', home_country: 'United Kingdom' });
+    assert.equal(su.status, 201);
+    const ck = su.headers.get('set-cookie').split(';')[0];
+    assert.equal((await (await fetch(base + '/api/flights', { headers: { Cookie: ck } })).json()).flights.length, 1);
+    const second = await post(base, '/api/auth/signup', { username: 'visitor', password: 'visitor-pass', distance_unit: 'km', home_country: 'France' });
+    const ck2 = second.headers.get('set-cookie').split(';')[0];
+    assert.equal((await (await fetch(base + '/api/flights', { headers: { Cookie: ck2 } })).json()).flights.length, 0);
+  });
+});
+
+test('FL_SIGNUPS=off blocks new accounts once one exists', async () => {
+  await oldDatabase({ FL_SIGNUPS: 'off' }, async (base) => {
+    assert.equal((await post(base, '/api/auth/signup', { username: 'first', password: 'first-pass-1', distance_unit: 'km', home_country: 'France' })).status, 201);
+    assert.equal((await post(base, '/api/auth/signup', { username: 'second', password: 'second-pass', distance_unit: 'km', home_country: 'France' })).status, 403);
+    assert.equal((await (await fetch(base + '/api/auth/status')).json()).signups, false);
+  });
 });
 
 test('airports carry IANA time zones; manual airports validate theirs', async () => {
@@ -266,4 +318,60 @@ test('airports carry IANA time zones; manual airports validate theirs', async ()
   assert.equal(f.to_airport.tz, 'Europe/Amsterdam');
   const exp = (await call('GET', '/api/export')).data;
   assert.equal(exp.airports.find((a) => a.iata === 'ZZB').tz, 'Europe/London');
+});
+
+test('API needs a signed-in session; the login page itself is public', async () => {
+  assert.equal((await callAs('', 'GET', '/api/flights')).status, 401);
+  assert.equal((await fetch(BASE + '/')).status, 200);
+  const st = await callAs('', 'GET', '/api/auth/status');
+  assert.equal(st.data.authenticated, false);
+  assert.equal(st.data.signups, true);
+  assert.equal((await call('GET', '/api/auth/status')).data.user.username, 'tester');
+});
+
+test('login: wrong password refused, right password works, logout ends the session', async () => {
+  assert.equal((await callAs('', 'POST', '/api/auth/login', { username: 'tester', password: 'nope-nope' })).status, 401);
+  const ok = await callAs('', 'POST', '/api/auth/login', { username: 'TESTER', password: 'correct-horse' });
+  assert.equal(ok.status, 200);
+  assert.match(ok.setCookie, /HttpOnly/);
+  assert.match(ok.setCookie, /SameSite=Lax/);
+  assert.equal((await callAs(ok.cookie, 'GET', '/api/flights')).status, 200);
+  await callAs(ok.cookie, 'POST', '/api/auth/logout', {});
+  assert.equal((await callAs(ok.cookie, 'GET', '/api/flights')).status, 401);
+});
+
+test('signup validates input and asks for home country and distance unit', async () => {
+  const base = { username: 'newbie', password: 'longenough1', distance_unit: 'km', home_country: 'France' };
+  assert.equal((await callAs('', 'POST', '/api/auth/signup', { ...base, password: 'short' })).status, 400);
+  assert.equal((await callAs('', 'POST', '/api/auth/signup', { ...base, distance_unit: 'parsecs' })).status, 400);
+  assert.equal((await callAs('', 'POST', '/api/auth/signup', { ...base, home_country: '' })).status, 400);
+  assert.equal((await callAs('', 'POST', '/api/auth/signup', { ...base, username: 'a b' })).status, 400);
+  assert.equal((await callAs('', 'POST', '/api/auth/signup', { ...base, username: 'Tester' })).status, 409);
+});
+
+test('each account only sees its own flights, companions and settings', async () => {
+  const other = await callAs('', 'POST', '/api/auth/signup', { username: 'second', password: 'another-pass', distance_unit: 'km', home_country: 'France' });
+  assert.equal(other.status, 201);
+  const mine = (await call('GET', '/api/flights')).data.flights.length;
+  assert.ok(mine > 0);
+  assert.equal((await callAs(other.cookie, 'GET', '/api/flights')).data.flights.length, 0);
+  assert.equal((await callAs(other.cookie, 'GET', '/api/companions')).data.companions.length, 0);
+  assert.equal((await callAs(other.cookie, 'GET', '/api/account/settings')).data.home_country, 'France');
+  assert.equal((await call('GET', '/api/account/settings')).data.distance_unit, 'mi');
+  const f = (await call('GET', '/api/flights')).data.flights[0];
+  assert.equal((await callAs(other.cookie, 'GET', '/api/flights/' + f.id)).status, 404);
+  assert.equal((await callAs(other.cookie, 'DELETE', '/api/flights/' + f.id)).status, 404);
+  assert.equal((await call('GET', '/api/flights')).data.flights.length, mine);
+  // an import with the same ids must not touch (or take over) the other account's rows
+  const exp = (await call('GET', '/api/export')).data;
+  const imp = await callAs(other.cookie, 'POST', '/api/import', exp);
+  assert.equal(imp.status, 200);
+  assert.equal(imp.data.imported, exp.flights.length);
+  assert.equal((await call('GET', '/api/flights')).data.flights.length, mine);
+  assert.equal((await callAs(other.cookie, 'GET', '/api/flights')).data.flights.length, exp.flights.length);
+});
+
+test('request bodies must be JSON', async () => {
+  const res = await fetch(BASE + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: '{"username":"tester","password":"correct-horse"}' });
+  assert.equal(res.status, 415);
 });

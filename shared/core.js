@@ -98,10 +98,10 @@
     }
 
     const by_departure_home_country_airport = home
-      ? bucket(flights.filter((f) => f.from_airport.country === home), (f) => `${f.from_airport.iata} — ${f.from_airport.city || ''}`)
+      ? bucket(flights.filter((f) => f.from_airport.country === home), (f) => `${f.from_airport.iata} — ${airportName(f.from_airport)}`)
       : [];
     const by_arrival_international_airport = home
-      ? bucket(flights.filter((f) => f.to_airport.country !== home), (f) => `${f.to_airport.iata} — ${f.to_airport.city || ''}`)
+      ? bucket(flights.filter((f) => f.to_airport.country !== home), (f) => `${f.to_airport.iata} — ${airportName(f.to_airport)}`)
       : [];
 
     const by_route = bucket(flights, (f) => `${f.from_airport.iata} → ${f.to_airport.iata}`);
@@ -385,8 +385,17 @@
     return sign + h + 'h ' + String(r).padStart(2, '0') + 'm';
   }
 
+  // The airport's own name without the word "Airport", e.g. "Manchester Airport" -> "Manchester",
+  // "Fuerteventura Airport" -> "Fuerteventura". (The city field is often a nearby town, so it is not used.)
+  function airportName(a) {
+    if (!a) return '';
+    const raw = String(a.name || '').trim();
+    const short = raw.replace(/\s+(international\s+|int'l\s+)?airport$/i, '').replace(/\s+airport\s*$/i, '').trim();
+    return short || raw || String(a.city || a.iata || '');
+  }
+
   const api = {
-    KM_TO_MI, haversineKm, aircraftManufacturer, computeStats, countryCenters,
+    KM_TO_MI, airportName, haversineKm, aircraftManufacturer, computeStats, countryCenters,
     validTz, estimateTz, resolveTz, localToUtc, localDateOf, legTimes, journeyTimes, tripTimes, fmtDuration,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

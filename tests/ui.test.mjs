@@ -12,9 +12,11 @@ import { fileURLToPath } from 'node:url';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const require = createRequire(import.meta.url);
 
-async function makeCtx() {
+async function makeCtx(opts = {}) {
   const store = new Map();
+  const events = [];
   const window = {
+    ...opts, __events: events, dispatchEvent(e) { events.push(e); return true; },
     FLCore: require(join(root, 'shared/core.js')),
     FL_AIRPORTS: JSON.parse(readFileSync(join(root, 'server/data/airports-fallback.json'), 'utf8')),
     addEventListener() {}, scrollTo() {},
@@ -24,6 +26,7 @@ async function makeCtx() {
     localStorage: { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, v), removeItem: (k) => store.delete(k) },
     crypto: { randomUUID: () => 'u-' + Math.random().toString(36).slice(2) },
     document: { title: '' }, location: { hash: '' },
+    Event: class { constructor(type) { this.type = type; } }, CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init && init.detail; } },
   });
   for (const f of ['tests/support/mock-api.js', 'frontend/data.js']) vm.runInContext(readFileSync(join(root, f), 'utf8'), ctx);
   // data.js assigns window.FL_DATA; app.js refers to the bare global
@@ -467,4 +470,138 @@ test('overview card shows the total cost on the right', async () => {
   const ret = list.items.find((it) => it.kind === 'trip' && it.type === 'return' && it.legs.length === 4);
   assert.equal(list.sideSummary(ret), 'Return trip \u00b7 4 flights');
   assert.ok(/^\d+ \w+/.test(list.sideDate(ret)));
+});
+
+test('airport names are used, not nearby town names', async () => {
+  const ctx = await makeCtx();
+  const core = require(join(root, 'shared/core.js'));
+  assert.equal(core.airportName({ name: 'Manchester Airport', city: 'Manchester, Greater Manchester' }), 'Manchester');
+  assert.equal(core.airportName({ name: 'Fuerteventura Airport', city: 'El Matorral' }), 'Fuerteventura');
+  assert.equal(core.airportName({ name: 'Leeds Bradford International Airport', city: 'Yeadon' }), 'Leeds Bradford');
+  assert.equal(core.airportName({ name: 'Heathrow', city: 'London' }), 'Heathrow');
+  const list = vm.runInContext('flightList()', ctx);
+  await list.load();
+  const trip = list.items.find((it) => it.kind === 'trip');
+  assert.ok(!/El Matorral|Greater/.test(list.tripTitle(trip)));
+  const stats = (await (await ctx.window.FL_TEST_API.handle('api/stats', {})).json());
+  assert.ok(!JSON.stringify(stats).includes('El Matorral'));
+  assert.ok(JSON.stringify(stats).includes('LHR \u2014 Heathrow') || JSON.stringify(stats).includes('LHR \u2014 London Heathrow'));
+});
+
+test('trip page leaves out fields that are blank, and shows them once filled in', async () => {
+  const ctx = await makeCtx();
+  const api = ctx.window.FL_TEST_API;
+  const list = vm.runInContext('flightList()', ctx);
+  await list.load();
+  // a bare one-way trip: no cabin, no times, no price, no companions
+  const made = await (await api.handle('api/trips', { method: 'POST', body: JSON.stringify({ type: 'oneway', legs: [{ direction: 'outbound', from_iata: 'LHR', to_iata: 'AMS', date: '2025-03-01', airline: 'KLM' }, { direction: 'outbound', from_iata: 'AMS', to_iata: 'JFK', date: '2025-03-01', airline: 'KLM' }] }) })).json();
+  const d = vm.runInContext(`tripDetail(${JSON.stringify(made.id)})`, ctx);
+  await d.load();
+  const labels = () => d.summaryFacts.map((r) => r[0]);
+  assert.ok(!labels().includes('Cabin') && !labels().includes('Total cost'), 'blank cabin and price are hidden: ' + JSON.stringify(d.summaryFacts));
+  assert.ok(labels().includes('Airlines'));
+  assert.equal(d.timeBlocks.length, 0, 'no times recorded: the times section is empty');
+  assert.equal(d.showBooked, false);
+  assert.equal(d.t('\u2014'), '');
+  // edit the trip to add the details
+  await api.handle('api/trips/' + made.id, { method: 'PUT', body: JSON.stringify({ type: 'oneway', legs: [{ direction: 'outbound', from_iata: 'LHR', to_iata: 'AMS', date: '2025-03-01', airline: 'KLM', seat_class: 'Business', departure_time: '09:00', arrival_time: '11:30', price: '150' }, { direction: 'outbound', from_iata: 'AMS', to_iata: 'JFK', date: '2025-03-01', airline: 'KLM', departure_time: '13:00', arrival_time: '15:30' }] }) });
+  const d2 = vm.runInContext(`tripDetail(${JSON.stringify(made.id)})`, ctx);
+  await d2.load();
+  const l2 = d2.summaryFacts.map((r) => r[0]);
+  assert.ok(l2.includes('Cabin') && l2.includes('Total cost'));
+  assert.ok(d2.timeBlocks.length > 0 && d2.showBooked && !d2.showActual, 'booked times appear, actual column stays hidden');
+});
+
+test('route map filters by airline and home airport (left of the year filter)', async () => {
+  const ctx = await makeCtx();
+  const m = vm.runInContext('mapView()', ctx);
+  m.$nextTick = () => {};
+  await m.load();
+  assert.ok(m.airlineOptions.some((a) => a.name === 'British Airways'));
+  assert.ok(m.homeAirportOptions.length > 0 && m.homeAirportOptions.every((o) => /^[A-Z]{3} /.test(o.label)));
+  // only airports in the home country (United Kingdom) are offered
+  assert.ok(!m.homeAirportOptions.some((o) => ['JFK', 'AMS', 'DXB'].includes(o.iata)));
+  assert.ok(m.homeAirportOptions.some((o) => o.iata === 'LHR'));
+  const all = m.activeFlights.length;
+  m.airlineFilter = 'British Airways';
+  assert.ok(m.activeFlights.length > 0 && m.activeFlights.length < all && m.activeFlights.every((f) => f.airline === 'British Airways'));
+  m.homeAirport = 'LHR';
+  assert.ok(m.activeFlights.every((f) => f.from_airport.iata === 'LHR' || f.to_airport.iata === 'LHR'));
+  m.activeYear = '2024';
+  assert.ok(m.activeFlights.every((f) => f.date.startsWith('2024')));
+  m.homeAirport = 'MAN'; m.airlineFilter = '__all__'; m.activeYear = '__all__';
+  assert.ok(m.activeFlights.every((f) => f.from_airport.iata === 'MAN' || f.to_airport.iata === 'MAN'));
+  assert.ok(m.yearOptions.every((y) => y.flights.length > 0));
+  assert.ok(m.mapFiltersActive);
+  m.clearFilters();
+  assert.ok(!m.mapFiltersActive && m.activeFlights.length === all, 'Clear filters resets airline, home airport and year');
+  // template order: Airline, Home Airport, Year
+  const html = readFileSync(join(root, 'frontend/index.html'), 'utf8');
+  const i = (id) => html.indexOf('id="' + id + '"');
+  assert.ok(i('map-airline-select') > 0 && i('map-airline-select') < i('map-home-select') && i('map-home-select') < i('map-year-select'));
+});
+
+test('login page: sign in, wrong password, sign up with country and units, sign out', async () => {
+  const ctx = await makeCtx({ FL_REQUIRE_LOGIN: true });
+  const shell = vm.runInContext('shell()', ctx);
+  await shell.checkAuth();
+  assert.equal(shell.auth, 'out');
+  const v = vm.runInContext('authView()', ctx);
+  await v.load();
+  assert.ok(v.countries.length > 5, 'country list is available before signing in');
+  v.username = 'demo'; v.password = 'wrong-pass';
+  await v.submit();
+  assert.match(v.error, /Incorrect/);
+  v.password = 'demo1234';
+  await v.submit();
+  assert.equal(v.error, '');
+  const ev = ctx.window.__events.find((e) => e.type === 'fl-signed-in');
+  assert.equal(ev.detail.username, 'demo');
+  await shell.checkAuth();
+  assert.equal(shell.auth, 'in');
+  assert.equal((await vm.runInContext("(async () => (await apiJson('api/flights')).flights.length)()", ctx)), 19);
+  await shell.signOut();
+  assert.equal(shell.auth, 'out');
+  // sign up: needs home country; new account starts empty with the chosen units
+  v.mode = 'signup'; v.username = 'newuser'; v.password = 'long-enough-1'; v.confirm = 'different';
+  await v.submit();
+  assert.match(v.error, /do not match/);
+  v.confirm = 'long-enough-1';
+  await v.submit();
+  assert.match(v.error, /home country/i);
+  v.homeCountry = 'France'; v.unit = 'mi';
+  await v.submit();
+  assert.equal(v.error, '');
+  assert.equal((await vm.runInContext("(async () => (await apiJson('api/flights')).flights.length)()", ctx)), 0, 'a new account does not see the demo account\'s flights');
+  const s = await vm.runInContext("(async () => apiJson('api/account/settings'))()", ctx);
+  assert.equal(s.distance_unit, 'mi');
+  assert.equal(s.home_country, 'France');
+});
+
+test('index.html tags are balanced and the route map element sits inside the map page', () => {
+  const html = readFileSync(join(root, 'frontend/index.html'), 'utf8');
+  const body = html.slice(html.indexOf('<body'));
+  for (const tag of ['template', 'div', 'select', 'main', 'section']) {
+    const open = (body.match(new RegExp('<' + tag + '[\\s>]', 'g')) || []).length;
+    const close = (body.match(new RegExp('</' + tag + '>', 'g')) || []).length;
+    assert.equal(open, close, `<${tag}> tags must balance`);
+  }
+  const mapPage = html.slice(html.indexOf("x-if=\"route==='map'\""), html.indexOf("x-if=\"route==='stats'\""));
+  assert.ok(mapPage.includes('id="map"'), 'the map element belongs to the route map page');
+});
+
+test('statistics page loads flights and settings and hands them to the stats renderer', async () => {
+  const ctx = await makeCtx();
+  let call = null;
+  ctx.FLStats = { mount(root, flights, opts) { call = { root, n: flights.length, opts }; } };
+  const s = vm.runInContext('statsView()', ctx);
+  s.$refs = { statsRoot: { id: 'root' } };
+  s.$nextTick = async () => {};
+  await s.load();
+  assert.equal(s.loading, false);
+  assert.equal(s.error, '');
+  assert.ok(call && call.n > 0);
+  assert.equal(call.root.id, 'root');
+  assert.ok(['km', 'mi'].includes(call.opts.unit));
+  assert.equal(typeof call.opts.home, 'string');
 });

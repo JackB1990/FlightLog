@@ -13,21 +13,24 @@
 <script src="vendor/leaflet.js"></script>
 <script src="data.js"></script>
 <script src="core.js"></script>
+<script src="world.js"></script>
+<script src="stats.js"></script>
 <script src="app.js"></script>
 <script src="vendor/alpine.min.js" defer></script>
 </head>
 <body>
 <div x-data="shell()" x-cloak>
-  <header class="topbar">
+  <header class="topbar" x-show="auth !== 'checking'">
     <div class="topbar-inner">
       <div class="topbar-row">
         <a class="brand" href="#/"><img src="logo.png" alt="FlightLog" class="brand-logo"></a>
-        <div class="topbar-right">
+        <div class="topbar-right" x-show="auth === 'in'">
           <span class="env-badge">Self-hosted</span>
           <a href="#/settings" class="top-btn">Settings</a>
+          <button type="button" class="top-btn" @click="signOut()" x-text="'Sign out' + (user ? ' (' + user.username + ')' : '')"></button>
         </div>
       </div>
-      <nav class="pill-nav">
+      <nav class="pill-nav" x-show="auth === 'in'">
         <a class="pill" :class="{active: route==='home' || route==='flight'}" href="#/">
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21 16v-2l-8-5V3.500a1.500 1.500 0 0 0-3 0V9l-8 5v2l8-2.500V19l-2 1.500V22l3.500-1 3.500 1v-1.500L13 19v-5.500z"/></svg>
           Flights
@@ -48,6 +51,69 @@
     </div>
   </header>
 
+  <!-- ================================ SIGN IN / SIGN UP =============================== -->
+  <template x-if="auth === 'out'">
+    <main class="page auth-page">
+      <div x-data="authView()" x-init="load()" class="auth-card">
+        <div class="page-header">
+          <h1 class="page-title"><span class="eyebrow">Welcome to FlightLog</span><span x-text="mode === 'signup' ? 'Create your account' : 'Sign in'"></span></h1>
+        </div>
+        <form @submit.prevent="submit()" autocomplete="on" novalidate>
+          <div class="form-card">
+            <template x-if="hasUsers && signups">
+              <div class="toggle-pill" style="margin-bottom:16px;">
+                <button type="button" :class="{active: mode==='login'}" @click="setMode('login')">Sign in</button>
+                <button type="button" :class="{active: mode==='signup'}" @click="setMode('signup')">Create account</button>
+              </div>
+            </template>
+            <template x-if="legacyData && mode === 'signup'">
+              <p class="form-hint" style="margin-bottom:16px;">Your existing flights are already here. The account you create now will own them.</p>
+            </template>
+            <div class="form-field">
+              <label for="auth-user">Username</label>
+              <input id="auth-user" type="text" x-model="username" autocomplete="username" autocapitalize="none" spellcheck="false" autofocus>
+            </div>
+            <div class="form-field">
+              <label for="auth-pass">Password</label>
+              <input id="auth-pass" type="password" x-model="password" :autocomplete="mode === 'signup' ? 'new-password' : 'current-password'">
+              <template x-if="mode === 'signup'"><p class="form-hint">At least 8 characters.</p></template>
+            </div>
+            <template x-if="mode === 'signup'">
+              <div class="form-field">
+                <label for="auth-confirm">Confirm password</label>
+                <input id="auth-confirm" type="password" x-model="confirm" autocomplete="new-password">
+              </div>
+            </template>
+          </div>
+          <template x-if="mode === 'signup'">
+            <div>
+              <div class="form-card">
+                <h3 class="settings-section-title">Units</h3>
+                <p class="form-hint" style="margin-top:-4px; margin-bottom:16px;">Used for every distance shown across the app.</p>
+                <div class="toggle-pill">
+                  <button type="button" :class="{active: unit==='km'}" @click="unit='km'">Kilometers</button>
+                  <button type="button" :class="{active: unit==='mi'}" @click="unit='mi'">Miles</button>
+                </div>
+              </div>
+              <div class="form-card">
+                <h3 class="settings-section-title">Home Country</h3>
+                <p class="form-hint" style="margin-top:-4px; margin-bottom:16px;">Centers the Route Map and Airport statistics on this country.</p>
+                <select x-model="homeCountry" aria-label="Home country" style="max-width:320px;">
+                  <option value="">Choose your country&hellip;</option>
+                  <template x-for="c in countries" :key="c.name"><option :value="c.name" x-text="c.name"></option></template>
+                </select>
+              </div>
+            </div>
+          </template>
+          <template x-if="error"><p class="form-error" role="alert" x-text="error"></p></template>
+          <button type="submit" class="btn btn-primary btn-block" :disabled="busy" x-text="busy ? 'Please wait\u2026' : (mode === 'signup' ? 'Create account' : 'Sign in')"></button>
+          <template x-if="hasUsers && !signups"><p class="form-hint" style="margin-top:12px;">New accounts are switched off on this server.</p></template>
+        </form>
+      </div>
+    </main>
+  </template>
+
+  <template x-if="auth === 'in'">
   <main class="page">
 
       <!-- ================================== FLIGHTS ================================== -->
@@ -231,7 +297,7 @@
             <div>
               <div class="detail-head">
                 <div class="detail-head-text">
-                  <h1 class="h1" style="margin:0;" x-text="f.from_airport.city + ' to ' + f.to_airport.city"></h1>
+                  <h1 class="h1" style="margin:0;" x-text="airportName(f.from_airport) + ' to ' + airportName(f.to_airport)"></h1>
                   <div class="form-hint" x-text="fmtLongDate(f.date) + ' \u00b7 ' + f.airline + (f.flight_number ? ' ' + f.flight_number : '')"></div>
                 </div>
                 <div class="detail-actions">
@@ -379,7 +445,7 @@
                             <span x-show="!l._logoUrl" class="logo-fallback" :style="{background: l._color, color: l._colorText}" x-text="initials(l.airline)"></span>
                           </div>
                           <div class="fd-end">
-                            <div class="fd-time" :class="{late: l._depLate}" x-text="l._dep"></div>
+                            <div class="fd-time" :class="{late: l._depLate}" x-text="t(l._dep)"></div>
                             <div class="fd-code" x-text="l.from_airport.iata"></div>
                           </div>
                           <div class="fd-mid">
@@ -388,7 +454,7 @@
                             <div class="fd-direct" x-show="!hasStopover">Direct</div>
                           </div>
                           <div class="fd-end">
-                            <div class="fd-time" :class="{late: l._arrLate}"><span x-text="l._arr"></span><sup x-show="l._nextDay" x-text="l._dayText"></sup></div>
+                            <div class="fd-time" :class="{late: l._arrLate}"><span x-text="t(l._arr)"></span><sup x-show="l._nextDay" x-text="l._dayText"></sup></div>
                             <div class="fd-code" x-text="l.to_airport.iata"></div>
                           </div>
                           <button type="button" class="fd-toggle" @click="open = !open" :aria-expanded="open" aria-label="Show or hide flight details">
@@ -403,7 +469,7 @@
                         </div>
                         <div class="fd-timeline">
                           <div class="fd-stop">
-                            <span class="fd-t" :class="{struck: l._depLate}" x-text="l.departure_time || l._dep"></span>
+                            <span class="fd-t" :class="{struck: l._depLate}" x-text="l.departure_time || t(l._dep)"></span>
                             <span class="fd-place"><b x-text="l.from_airport.iata"></b> <span x-text="l.from_airport.name"></span></span>
                           </div>
                           <div class="fd-bubble-row">
@@ -413,14 +479,14 @@
                             </span>
                           </div>
                           <div class="fd-stop">
-                            <span class="fd-t"><span :class="{struck: l._arrLate}" x-text="l.arrival_time || l._arr"></span><sup x-show="l._nextDay" x-text="l._dayText"></sup></span>
+                            <span class="fd-t"><span :class="{struck: l._arrLate}" x-text="l.arrival_time || t(l._arr)"></span><sup x-show="l._nextDay" x-text="l._dayText"></sup></span>
                             <span class="fd-place"><b x-text="l.to_airport.iata"></b> <span x-text="l.to_airport.name"></span></span>
                           </div>
                         </div>
-                        <div class="fd-foot">
-                          <span><b>Arrives:</b> <span x-text="arrives(l)"></span></span>
-                          <span class="fd-sep">|</span>
-                          <span><b>Journey duration:</b> <span x-text="flightTime(l)"></span></span>
+                        <div class="fd-foot" x-show="t(arrives(l)) || t(flightTime(l))">
+                          <span x-show="t(arrives(l))"><b>Arrives:</b> <span x-text="arrives(l)"></span></span>
+                          <span class="fd-sep" x-show="t(arrives(l)) && t(flightTime(l))">|</span>
+                          <span x-show="t(flightTime(l))"><b>Journey duration:</b> <span x-text="flightTime(l)"></span></span>
                         </div>
                       </div>
                     </div>
@@ -442,7 +508,7 @@
                                 </template>
                               </div>
                               <div class="fd-end">
-                                <div class="fd-time" :class="{late: j.first._depLate}" x-text="j.first._dep"></div>
+                                <div class="fd-time" :class="{late: j.first._depLate}" x-text="t(j.first._dep)"></div>
                                 <div class="fd-code" x-text="j.first.from_airport.iata"></div>
                               </div>
                               <div class="fd-mid">
@@ -455,7 +521,7 @@
                                 <div class="fd-stops-codes" x-text="j.stopCodes"></div>
                               </div>
                               <div class="fd-end">
-                                <div class="fd-time" :class="{late: j.last._arrLate}"><span x-text="j.last._arr"></span><sup x-show="j.dayText" x-text="j.dayText"></sup></div>
+                                <div class="fd-time" :class="{late: j.last._arrLate}"><span x-text="t(j.last._arr)"></span><sup x-show="j.dayText" x-text="j.dayText"></sup></div>
                                 <div class="fd-code" x-text="j.last.to_airport.iata"></div>
                               </div>
                               <button type="button" class="fd-toggle" @click="open = !open" :aria-expanded="open" aria-label="Show or hide flight details">
@@ -480,7 +546,7 @@
                                   </div>
                                   <div class="fd-timeline">
                                     <div class="fd-stop">
-                                      <span class="fd-t" :class="{struck: l._depLate}" x-text="l.departure_time || l._dep"></span>
+                                      <span class="fd-t" :class="{struck: l._depLate}" x-text="l.departure_time || t(l._dep)"></span>
                                       <span class="fd-place"><b x-text="l.from_airport.iata"></b> <span x-text="l.from_airport.name"></span></span>
                                     </div>
                                     <div class="fd-bubble-row">
@@ -490,17 +556,17 @@
                                       </span>
                                     </div>
                                     <div class="fd-stop">
-                                      <span class="fd-t"><span :class="{struck: l._arrLate}" x-text="l.arrival_time || l._arr"></span><sup x-show="l._dayText && l._dayOffset !== 0" x-text="l._dayText"></sup></span>
+                                      <span class="fd-t"><span :class="{struck: l._arrLate}" x-text="l.arrival_time || t(l._arr)"></span><sup x-show="l._dayText && l._dayOffset !== 0" x-text="l._dayText"></sup></span>
                                       <span class="fd-place"><b x-text="l.to_airport.iata"></b> <span x-text="l.to_airport.name"></span></span>
                                     </div>
                                   </div>
                                 </div>
                               </div>
                             </template>
-                            <div class="fd-foot">
-                              <span><b>Arrives:</b> <span x-text="j.arrives"></span></span>
-                              <span class="fd-sep">|</span>
-                              <span><b>Journey duration:</b> <span x-text="j.durationText"></span></span>
+                            <div class="fd-foot" x-show="t(j.arrives) || t(j.durationText)">
+                              <span x-show="t(j.arrives)"><b>Arrives:</b> <span x-text="j.arrives"></span></span>
+                              <span class="fd-sep" x-show="t(j.arrives) && t(j.durationText)">|</span>
+                              <span x-show="t(j.durationText)"><b>Journey duration:</b> <span x-text="j.durationText"></span></span>
                             </div>
                           </div>
                         </div>
@@ -535,21 +601,23 @@
                       </template>
                     </section>
                   </template>
+                  <template x-if="timeBlocks.length">
                   <section class="form-card">
                     <h3 class="settings-section-title">Flight &amp; Trip Times</h3>
                     <div class="times-table">
-                      <div class="times-head"><span></span><span>Booked</span><span>Actual</span></div>
+                      <div class="times-head" :style="{gridTemplateColumns: timeCols}"><span></span><span x-show="showBooked">Booked</span><span x-show="showActual">Actual</span></div>
                       <template x-for="block in timeBlocks" :key="block.title">
                         <div class="times-block">
                           <div class="times-title" x-text="block.title"></div>
                           <template x-for="row in block.rows" :key="row[0]">
-                            <div class="times-row"><span x-text="row[0]"></span><span x-text="row[1]"></span><span x-text="hasActualTimes ? row[2] : '\u2014'"></span></div>
+                            <div class="times-row" :style="{gridTemplateColumns: timeCols}"><span x-text="row[0]"></span><span x-show="showBooked" x-text="row[1] || ''"></span><span x-show="showActual" x-text="row[2] || ''"></span></div>
                           </template>
                         </div>
                       </template>
                     </div>
                     <template x-if="timesEstimated"><p class="form-hint warn" style="margin:12px 0 0;">Some airports have no time zone saved, so their durations are estimated from longitude and may be out by an hour or more.</p></template>
                   </section>
+                  </template>
                 </div>
               </div>
             </div>
@@ -569,14 +637,35 @@
             <div class="empty-state">No routes to plot yet &mdash; log a flight to see it appear here.</div>
           </template>
           <template x-if="!loading && routes.length > 0">
-            <div class="year-select-wrap form-field">
-              <label for="map-year-select">Year</label>
-              <select id="map-year-select" x-model="activeYear" @change="drawRoutes()">
-                <option value="__all__" x-text="'All years (' + routes.length + (routes.length === 1 ? ' flight' : ' flights') + ')'"></option>
-                <template x-for="yg in yearGroups" :key="yg.year">
-                  <option :value="yg.year" x-text="yg.year + ' (' + yg.flights.length + (yg.flights.length === 1 ? ' flight' : ' flights') + ')'"></option>
-                </template>
-              </select>
+            <div class="map-filters">
+              <div class="year-select-wrap form-field">
+                <label for="map-airline-select">Airline</label>
+                <select id="map-airline-select" x-model="airlineFilter" @change="applyFilters()">
+                  <option value="__all__">All airlines</option>
+                  <template x-for="a in airlineOptions" :key="a.name">
+                    <option :value="a.name" x-text="a.name + ' (' + a.n + ')'"></option>
+                  </template>
+                </select>
+              </div>
+              <div class="year-select-wrap form-field">
+                <label for="map-home-select">Home Airport</label>
+                <select id="map-home-select" x-model="homeAirport" @change="applyFilters()">
+                  <option value="__all__">All airports</option>
+                  <template x-for="a in homeAirportOptions" :key="a.iata">
+                    <option :value="a.iata" x-text="a.label + ' (' + a.n + ')'"></option>
+                  </template>
+                </select>
+              </div>
+              <div class="year-select-wrap form-field">
+                <label for="map-year-select">Year</label>
+                <select id="map-year-select" x-model="activeYear" @change="drawRoutes()">
+                  <option value="__all__" x-text="'All years (' + filteredBase.length + (filteredBase.length === 1 ? ' flight' : ' flights') + ')'"></option>
+                  <template x-for="yg in yearOptions" :key="yg.year">
+                    <option :value="yg.year" x-text="yg.year + ' (' + yg.flights.length + (yg.flights.length === 1 ? ' flight' : ' flights') + ')'"></option>
+                  </template>
+                </select>
+              </div>
+              <button type="button" class="btn btn-navy" :disabled="!mapFiltersActive" @click="clearFilters()">Clear filters</button>
             </div>
           </template>
           <div class="map-wrap" id="map" x-show="!loading && routes.length > 0" style="display:none;"></div>
@@ -591,168 +680,7 @@
           </div>
           <template x-if="error"><p class="form-error" x-text="error"></p></template>
           <template x-if="loading && !error"><p class="form-hint">Loading&hellip;</p></template>
-          <template x-if="!loading">
-            <div>
-              <div class="stat-strip">
-                <div class="split-flap"><div class="value" x-text="s.total_flights"></div><div class="label">Total Flights</div></div>
-                <div class="split-flap"><div class="value" x-text="fmtTotalDist()"></div><div class="label" x-text="'Distance (' + unit + ')'"></div></div>
-                <div class="split-flap"><div class="value" x-text="s.unique_airports"></div><div class="label">Airports Visited</div></div>
-                <div class="split-flap"><div class="value" x-text="s.unique_countries"></div><div class="label">Countries Visited</div></div>
-              </div>
-              <div class="stat-strip">
-                <div class="split-flap"><div class="value" x-text="s.unique_routes"></div><div class="label">Unique Routes</div></div>
-                <div class="split-flap"><div class="value" x-text="s.distinct_airlines"></div><div class="label">Airlines Flown</div></div>
-                <div class="split-flap"><div class="value" x-text="s.distinct_aircraft"></div><div class="label">Aircraft Types</div></div>
-                <div class="split-flap"><div class="value" x-text="s.on_time_pct === null ? '—' : s.on_time_pct + '%'"></div><div class="label">On-Time Rate</div></div>
-                <div class="split-flap"><div class="value" x-text="s.longest_flight ? fmtDist(s.longest_flight) : '—'"></div><div class="label" x-text="'Longest' + (s.longest_flight ? ' (' + s.longest_flight.label + ')' : '')"></div></div>
-                <div class="split-flap"><div class="value" x-text="s.shortest_flight ? fmtDist(s.shortest_flight) : '—'"></div><div class="label" x-text="'Shortest' + (s.shortest_flight ? ' (' + s.shortest_flight.label + ')' : '')"></div></div>
-                <div class="split-flap"><div class="value" x-text="s.first_flight ? s.first_flight.date : '—'"></div><div class="label" x-text="'First Flight' + (s.first_flight ? ' (' + s.first_flight.label + ')' : '')"></div></div>
-                <div class="split-flap"><div class="value" x-text="s.longest_streak"></div><div class="label">Year Streak</div></div>
-              </div>
-
-              <div class="toggle-pill">
-                <button type="button" :class="{active: page==='airlines'}" @click="page='airlines'">Airlines &amp; Aircraft</button>
-                <button type="button" :class="{active: page==='airports'}" @click="page='airports'">Airports</button>
-                <button type="button" :class="{active: page==='routes'}" @click="page='routes'">Routes</button>
-                <button type="button" :class="{active: page==='seatclass'}" @click="page='seatclass'">Seat Class</button>
-                <button type="button" :class="{active: page==='punctuality'}" @click="page='punctuality'">Punctuality</button>
-                <button type="button" :class="{active: page==='seasonality'}" @click="page='seasonality'">Seasonality</button>
-                <button type="button" :class="{active: page==='companions'}" @click="page='companions'">Companions</button>
-              </div>
-              <div class="toggle-pill metric-toggle">
-                <button type="button" :class="{active: metric==='flights'}" @click="metric='flights'">Flights</button>
-                <button type="button" :class="{active: metric==='distance'}" @click="metric='distance'">Distance</button>
-              </div>
-
-              <template x-if="page==='airlines'">
-                <div class="chart-grid">
-                  <div class="chart-card"><h3>By Airline</h3>
-                    <template x-if="!s.by_airline.length"><p class="form-hint">No data yet.</p></template>
-                    <template x-for="row in s.by_airline.slice(0,8)" :key="row.label"><div class="breakdown-row logo-with-label"><span class="breakdown-label"><img x-show="airlineLogo(row.label)" :src="airlineLogo(row.label)" @error="$el.style.display='none'" class="airline-logo" :alt="row.label" loading="lazy"><span x-text="row.label"></span></span><div class="breakdown-bar-track"><div class="breakdown-bar-fill" :style="{width: pct(val(row), s.by_airline) + '%'}"></div></div><span x-text="fmtVal(row)"></span></div></template>
-                  </div>
-                  <div class="chart-card"><h3>By Aircraft Type</h3>
-                    <template x-if="!s.by_aircraft.length"><p class="form-hint">No data yet.</p></template>
-                    <template x-for="row in s.by_aircraft.slice(0,8)" :key="row.label"><div class="breakdown-row"><span x-text="row.label"></span><div class="breakdown-bar-track"><div class="breakdown-bar-fill" :style="{width: pct(val(row), s.by_aircraft) + '%'}"></div></div><span x-text="fmtVal(row)"></span></div></template>
-                  </div>
-                  <div class="chart-card"><h3>By Aircraft Manufacturer</h3>
-                    <template x-if="!s.by_manufacturer.length"><p class="form-hint">No data yet.</p></template>
-                    <template x-for="row in s.by_manufacturer.slice(0,8)" :key="row.label"><div class="breakdown-row logo-with-label"><span class="breakdown-label"><img x-show="manufacturerLogo(row.label)" :src="manufacturerLogo(row.label)" @error="$el.style.display='none'" class="airline-logo" :alt="row.label" loading="lazy"><span x-text="row.label"></span></span><div class="breakdown-bar-track"><div class="breakdown-bar-fill" :style="{width: pct(val(row), s.by_manufacturer) + '%'}"></div></div><span x-text="fmtVal(row)"></span></div></template>
-                  </div>
-                  <div class="chart-card"><h3>By Year</h3>
-                    <template x-if="!s.by_year.length"><p class="form-hint">No data yet.</p></template>
-                    <div class="bar-chart">
-                      <template x-for="row in [...s.by_year].sort((a,b)=>a.label.localeCompare(b.label))" :key="row.label">
-                        <div class="bar-col">
-                          <div class="bar-value" x-text="fmtVal(row)"></div>
-                          <div class="bar-track"><div class="bar-fill" :style="{height: pct(val(row), s.by_year) + '%'}"></div></div>
-                          <div class="bar-label" x-text="row.label"></div>
-                        </div>
-                      </template>
-                    </div>
-                  </div>
-                </div>
-              </template>
-
-              <template x-if="page==='airports'">
-                <div class="chart-grid">
-                  <div class="chart-card"><h3>Departures from Home Country Airports</h3>
-                    <template x-if="!s.home_country"><p class="form-hint">Set your home country in Settings to see this breakdown.</p></template>
-                    <template x-if="s.home_country && !s.by_departure_home_country_airport.length"><p class="form-hint">No data yet.</p></template>
-                    <template x-for="row in s.by_departure_home_country_airport" :key="row.label"><div class="breakdown-row"><span x-text="row.label"></span><div class="breakdown-bar-track"><div class="breakdown-bar-fill" :style="{width: pct(val(row), s.by_departure_home_country_airport) + '%'}"></div></div><span x-text="fmtVal(row)"></span></div></template>
-                  </div>
-                  <div class="chart-card"><h3>Arrivals at International Airports</h3>
-                    <template x-if="!s.home_country"><p class="form-hint">Set your home country in Settings to see this breakdown.</p></template>
-                    <template x-if="s.home_country && !s.by_arrival_international_airport.length"><p class="form-hint">No data yet.</p></template>
-                    <template x-for="row in s.by_arrival_international_airport" :key="row.label"><div class="breakdown-row"><span x-text="row.label"></span><div class="breakdown-bar-track"><div class="breakdown-bar-fill" :style="{width: pct(val(row), s.by_arrival_international_airport) + '%'}"></div></div><span x-text="fmtVal(row)"></span></div></template>
-                  </div>
-                </div>
-              </template>
-
-              <template x-if="page==='routes'">
-                <div class="chart-grid">
-                  <div class="chart-card"><h3>Top Routes</h3>
-                    <template x-if="!s.by_route.length"><p class="form-hint">No data yet.</p></template>
-                    <template x-for="row in s.by_route.slice(0,10)" :key="row.label"><div class="breakdown-row"><span x-text="row.label"></span><div class="breakdown-bar-track"><div class="breakdown-bar-fill" :style="{width: pct(val(row), s.by_route) + '%'}"></div></div><span x-text="fmtVal(row)"></span></div></template>
-                  </div>
-                  <div class="chart-card"><h3>Domestic vs International</h3>
-                    <div class="donut-wrap">
-                      <div class="donut" :style="{background: donutGradient(s.by_trip_type)}"><div class="donut-hole"><div class="donut-total" x-text="donutTotalLabel(s.by_trip_type)"></div><div class="donut-total-label">Total</div></div></div>
-                      <div class="donut-legend">
-                        <template x-for="(row,i) in s.by_trip_type" :key="row.label"><div class="donut-legend-row"><span class="donut-swatch" :style="{background: donutColor(i)}"></span><span x-text="row.label"></span><span class="donut-legend-value" x-text="fmtVal(row)"></span></div></template>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </template>
-
-              <template x-if="page==='seatclass'">
-                <div class="chart-grid single">
-                  <div class="chart-card"><h3>By Seat Class</h3>
-                    <template x-if="!s.by_seat_class.length"><p class="form-hint">No data yet.</p></template>
-                    <div class="donut-wrap" x-show="s.by_seat_class.length">
-                      <div class="donut" :style="{background: donutGradient(s.by_seat_class)}"><div class="donut-hole"><div class="donut-total" x-text="donutTotalLabel(s.by_seat_class)"></div><div class="donut-total-label">Total</div></div></div>
-                      <div class="donut-legend">
-                        <template x-for="(row,i) in s.by_seat_class" :key="row.label"><div class="donut-legend-row"><span class="donut-swatch" :style="{background: donutColor(i)}"></span><span x-text="row.label"></span><span class="donut-legend-value" x-text="fmtVal(row)"></span></div></template>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </template>
-
-              <template x-if="page==='punctuality'">
-                <div class="chart-grid">
-                  <div class="chart-card"><h3>On Time vs Delayed</h3>
-                    <div class="donut-wrap">
-                      <div class="donut" :style="{background: donutGradient(s.by_punctuality)}"><div class="donut-hole"><div class="donut-total" x-text="donutTotalLabel(s.by_punctuality)"></div><div class="donut-total-label">Total</div></div></div>
-                      <div class="donut-legend">
-                        <template x-for="(row,i) in s.by_punctuality" :key="row.label"><div class="donut-legend-row"><span class="donut-swatch" :style="{background: donutColor(i)}"></span><span x-text="row.label"></span><span class="donut-legend-value" x-text="fmtVal(row)"></span></div></template>
-                      </div>
-                    </div>
-                  </div>
-                  <div class="chart-card"><h3>Delays by Reason</h3>
-                    <template x-if="!s.by_delay_reason.length"><p class="form-hint">No delays logged &mdash; nice!</p></template>
-                    <template x-for="row in s.by_delay_reason" :key="row.label"><div class="breakdown-row"><span x-text="row.label"></span><div class="breakdown-bar-track"><div class="breakdown-bar-fill" :style="{width: pct(val(row), s.by_delay_reason) + '%'}"></div></div><span x-text="fmtVal(row)"></span></div></template>
-                  </div>
-                </div>
-              </template>
-
-              <template x-if="page==='seasonality'">
-                <div class="chart-grid">
-                  <div class="chart-card"><h3>By Month</h3>
-                    <div class="bar-chart">
-                      <template x-for="row in s.by_month" :key="row.label">
-                        <div class="bar-col">
-                          <div class="bar-value" x-text="fmtVal(row)"></div>
-                          <div class="bar-track"><div class="bar-fill" :style="{height: pct(val(row), s.by_month) + '%'}"></div></div>
-                          <div class="bar-label" x-text="row.label"></div>
-                        </div>
-                      </template>
-                    </div>
-                  </div>
-                  <div class="chart-card"><h3>By Day of Week</h3>
-                    <div class="bar-chart">
-                      <template x-for="row in s.by_weekday" :key="row.label">
-                        <div class="bar-col">
-                          <div class="bar-value" x-text="fmtVal(row)"></div>
-                          <div class="bar-track"><div class="bar-fill" :style="{height: pct(val(row), s.by_weekday) + '%'}"></div></div>
-                          <div class="bar-label" x-text="row.label"></div>
-                        </div>
-                      </template>
-                    </div>
-                  </div>
-                </div>
-              </template>
-
-              <template x-if="page==='companions'">
-                <div class="chart-grid single">
-                  <div class="chart-card"><h3>Travel Companions</h3>
-                    <template x-if="!s.by_companion.length"><p class="form-hint">No companions logged on any flights yet.</p></template>
-                    <template x-for="row in s.by_companion" :key="row.label"><div class="breakdown-row"><span x-text="row.label"></span><div class="breakdown-bar-track"><div class="breakdown-bar-fill" :style="{width: pct(val(row), s.by_companion) + '%'}"></div></div><span x-text="fmtVal(row)"></span></div></template>
-                  </div>
-                </div>
-              </template>
-            </div>
-          </template>
+          <div x-ref="statsRoot" id="stats-root"></div>
         </div>
       </template>
 
@@ -1059,6 +987,10 @@
           <div class="page-header">
             <h1 class="page-title"><span class="eyebrow">Preferences</span>Settings</h1>
           </div>
+          <div class="form-card" x-show="username">
+            <h3 class="settings-section-title">Account</h3>
+            <p class="form-hint" style="margin-top:-4px; margin-bottom:0;">Signed in as <b x-text="username"></b>. Use <i>Sign out</i> at the top of the page to switch accounts.</p>
+          </div>
           <div class="form-card">
             <h3 class="settings-section-title">Units</h3>
             <p class="form-hint" style="margin-top:-4px; margin-bottom:16px;">Used for every distance shown across the app.</p>
@@ -1096,6 +1028,7 @@
       </template>
 
   </main>
+  </template>
 </div>
 <script>
   // If the scripts above could not load (e.g. offline), say so instead of showing a blank page.

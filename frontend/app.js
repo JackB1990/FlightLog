@@ -2,8 +2,12 @@
 
 // Tests can set window.FL_TEST_API to replace the network layer with an in-memory implementation of the same API.
 function api(path, opts) {
-  if (window.FL_TEST_API) return window.FL_TEST_API.handle(path, opts || {});
-  return fetch(path, opts);
+  const p = window.FL_TEST_API ? Promise.resolve(window.FL_TEST_API.handle(path, opts || {})) : fetch(path, Object.assign({ credentials: 'same-origin' }, opts));
+  // A 401 on any data request means the session ended: show the login screen.
+  return p.then((res) => {
+    if (res && res.status === 401 && String(path).indexOf('api/auth/') !== 0) window.dispatchEvent(new Event('fl-unauth'));
+    return res;
+  });
 }
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 async function apiJson(path, opts) {
@@ -29,6 +33,16 @@ function airlineLogo(name, w, h) {
   if (name === 'Monarch Airlines') return 'logos/monarch.svg';
   const code = AIRLINE_CODES[name];
   return code ? 'https://pics.avs.io/' + w + '/' + h + '/' + code + '.png' : null;
+}
+
+function manufacturerLogo(name) {
+  const urls = {
+    Boeing: 'https://upload.wikimedia.org/wikipedia/commons/4/4f/Boeing_full_logo.svg',
+    Airbus: 'https://cdn.simpleicons.org/airbus',
+    Bombardier: 'https://cdn.simpleicons.org/bombardier',
+    Embraer: 'https://upload.wikimedia.org/wikipedia/commons/5/54/Embraer_logo.svg',
+  };
+  return urls[name] || null;
 }
 
 function getContrast(hex) {
@@ -67,6 +81,9 @@ function groupByYear(flights) {
 /* ------------------------------------------------------- trips & flights model */
 
 // Adds the display fields used by every flight card / page.
+// Display name for an airport (see FLCore.airportName).
+function airportName(a) { return window.FLCore ? window.FLCore.airportName(a) : String((a && (a.name || a.city)) || ''); }
+
 function decorateFlight(f) {
   const color = AIRLINE_COLORS[f.airline] || '#4a5568';
   const depLate = !!(f.actual_departure_time && f.departure_time && f.actual_departure_time !== f.departure_time);
@@ -287,10 +304,29 @@ function shell() {
   return {
     route: 'home',
     params: {},
+    auth: 'checking', user: null,
+    async checkAuth() {
+      try {
+        const st = await apiJson('api/auth/status');
+        this.user = st.user;
+        this.auth = st.authenticated ? 'in' : 'out';
+      } catch (e) {
+        this.auth = 'out';
+      }
+    },
+    async signOut() {
+      try { await apiJson('api/auth/logout', { method: 'POST', headers: JSON_HEADERS, body: '{}' }); } catch (e) { /* already signed out */ }
+      this.user = null;
+      this.auth = 'out';
+      location.hash = '#/';
+    },
     get stripText() { return this.route === 'add' && this.params.id ? 'Edit flight' : STRIPS[this.route]; },
     init() {
       this.parse();
       window.addEventListener('hashchange', () => this.parse());
+      window.addEventListener('fl-unauth', () => { if (this.auth === 'in') { this.auth = 'out'; this.user = null; } });
+      window.addEventListener('fl-signed-in', (e) => { this.user = e.detail; this.auth = 'in'; location.hash = '#/'; this.parse(); });
+      this.checkAuth();
     },
     parse() {
       const h = location.hash.replace(/^#\/?/, '');
@@ -398,7 +434,8 @@ function flightList() {
       return (it.type === 'return' ? 'Return trip' : 'One-way trip') + ' \u00b7 ' + flights;
     },
     sideDate(it) { return it.kind === 'flight' ? this.fmtLongDate(it.f.date) : this.tripRange(it); },
-    placeName(a) { return a.city || a.name; },
+    placeName(a) { return airportName(a); },
+    airportName(a) { return airportName(a); },
     tripTitle(it) { return this.placeName(it.origin) + (it.type === 'return' ? ' ⇄ ' : ' → ') + this.placeName(it.destination); },
     rowMeta(row) { return row.single ? this.metaLine(row.first) : ''; },
     rowFoot(row) { return this.placeName(row.first.from_airport) + ' to ' + this.placeName(row.last.to_airport) + ' \u00b7 ' + this.fmtDist(row.distance_km); },
@@ -582,7 +619,8 @@ function tripDetail(key) {
       if (code) return code;
       return String(name).split(/\s+/).filter(Boolean).slice(0, 2).map((w) => w[0].toUpperCase()).join('');
     },
-    place(a) { return a.city || a.name; },
+    place(a) { return airportName(a); },
+    t(v) { return v === '\u2014' ? '' : v; },
     get title() { return this.place(this.item.origin) + (this.item.type === 'return' ? ' ⇄ ' : ' → ') + this.place(this.item.destination); },
     get subtitle() {
       const it = this.item;
@@ -597,17 +635,19 @@ function tripDetail(key) {
     get totalCost() { return this.item ? this.item.legs.reduce((n, l) => n + (Number(l.price) || 0), 0) : 0; },
     get summaryFacts() {
       const it = this.item;
-      const airlines = [...new Set(it.legs.map((l) => l.airline))].join(', ');
+      const airlines = [...new Set(it.legs.map((l) => l.airline).filter(Boolean))].join(', ');
       const classes = [...new Set(it.legs.map((l) => l.seat_class).filter(Boolean))].join(', ');
       const km = it.distance_km;
-      return [
+      const rows = [
         ['Flights', String(it.legs.length)],
-        ['Total distance', this.fmtDist(km)],
-        ['Airlines', airlines || dash],
-        ['Cabin', classes || dash],
+        ['Total distance', km ? this.fmtDist(km) : ''],
+        ['Airlines', airlines],
+        ['Cabin', classes],
         ['Travelling with', it.companions.length ? it.companions.map((c) => c.name + (c.relationship ? ' (' + c.relationship + ')' : '')).join(', ') : 'Travelling solo'],
-        ...(this.totalCost > 0 ? [['Total cost', this.fmtMoney(this.totalCost)]] : []),
+        ['Total cost', this.totalCost > 0 ? this.fmtMoney(this.totalCost) : ''],
       ];
+      // Blank fields are not shown; they appear once the trip is edited to include them.
+      return rows.filter((r) => r[1] && String(r[1]).trim() !== '');
     },
     fmtDist(km) {
       if (!km) return dash;
@@ -684,9 +724,9 @@ function tripDetail(key) {
       const tt = core.tripTimes(it.outbound.map((l) => l._t), it.inbound.map((l) => l._t));
       const fd = core.fmtDuration;
       const dash = '\u2014';
-      const booked = (v) => (v === null || v === undefined ? dash : fd(v));
+      const booked = (v) => (v === null || v === undefined ? null : fd(v));
       const actual = (a, b) => {
-        if (a === null || a === undefined) return dash;
+        if (a === null || a === undefined) return null;
         if (b === null || b === undefined || a === b) return fd(a);
         const d = a - b;
         return fd(a) + ' (' + (d > 0 ? '+' : '\u2212') + fd(Math.abs(d)) + ')';
@@ -699,14 +739,14 @@ function tripDetail(key) {
           ['Time In The Air', booked(s && s.air), actual(a && a.air, s && s.air)],
         ];
         if (legs > 1) rows.push(['Connections', booked(s && s.layover), actual(a && a.layover, s && s.layover)]);
-        return { title, rows };
+        return { title, rows: rows.filter((r) => r[1] !== null || r[2] !== null) };
       };
       const blocks = [];
       const multi = it.type === 'return';
       const o = journey(multi ? 'Outbound Journey' : 'Your Journey', tt.outbound, it.outbound.length);
-      if (o) blocks.push(o);
+      if (o && o.rows.length) blocks.push(o);
       const r = journey('Return Journey', tt.return, it.inbound.length);
-      if (r) blocks.push(r);
+      if (r && r.rows.length) blocks.push(r);
       const total = { title: 'Whole Trip', rows: [] };
       if (multi) {
         total.rows.push(['Total Time In The Air', booked(tt.scheduled && tt.scheduled.air), actual(tt.actual && tt.actual.air, tt.scheduled && tt.scheduled.air)]);
@@ -714,9 +754,13 @@ function tripDetail(key) {
       } else if (it.legs.length > 1) {
         total.rows.push(['Total Time In The Air', booked(tt.scheduled && tt.scheduled.air), actual(tt.actual && tt.actual.air, tt.scheduled && tt.scheduled.air)]);
       }
+      total.rows = total.rows.filter((r) => r[1] !== null || r[2] !== null);
       if (total.rows.length) blocks.push(total);
       return blocks;
     },
+    get showBooked() { return this.timeBlocks.some((b) => b.rows.some((r) => r[1] !== null)); },
+    get showActual() { return this.timeBlocks.some((b) => b.rows.some((r) => r[2] !== null)); },
+    get timeCols() { return '1fr' + (this.showBooked ? ' 1fr' : '') + (this.showActual ? ' 1fr' : ''); },
     get timesEstimated() { return this.item.legs.some((l) => l._t && l._t.estimated); },
     get hasActualTimes() { return this.item.legs.some((l) => l._t && l._t.actual); },
     // Real elapsed minutes between landing on one flight and taking off on the next (null if unknown).
@@ -737,7 +781,7 @@ function tripDetail(key) {
       if (m === null) return null;
       let label = 'Connect in airport';
       if (prev.to_airport.iata !== next.from_airport.iata) label = 'Change airport (' + prev.to_airport.iata + ' \u2192 ' + next.from_airport.iata + ')';
-      else if (m >= 24 * 60) label = 'Stopover in ' + (next.from_airport.city || next.from_airport.iata);
+      else if (m >= 24 * 60) label = 'Stopover in ' + airportName(next.from_airport);
       return { dur: window.FLCore.fmtDuration(m), label, long: m >= 240 && m < 24 * 60 };
     },
     get hasStopover() { return this.item.outbound.length > 1 || this.item.inbound.length > 1; },
@@ -1118,10 +1162,44 @@ function mapView() {
       if (!this.routes.length) return;
       this.$nextTick(() => this.initMap());
     },
+    airlineFilter: '__all__', homeAirport: '__all__',
+    // Flights that pass the Airline and Home Airport filters (before the Year filter).
+    get filteredBase() {
+      return this.routes.filter((f) => (this.airlineFilter === '__all__' || f.airline === this.airlineFilter)
+        && (this.homeAirport === '__all__' || f.from_airport.iata === this.homeAirport || f.to_airport.iata === this.homeAirport));
+    },
+    get airlineOptions() {
+      const m = new Map();
+      this.routes.forEach((f) => { if (f.airline) m.set(f.airline, (m.get(f.airline) || 0) + 1); });
+      return [...m.entries()].sort((x, y) => x[0].localeCompare(y[0])).map(([name, n]) => ({ name, n }));
+    },
+    // Airports in the home country that flights departed from or arrived into.
+    get homeAirportOptions() {
+      const m = new Map();
+      const add = (a) => {
+        if (this.homeCountry && a.country !== this.homeCountry) return;
+        const e = m.get(a.iata) || { iata: a.iata, label: a.iata + ' \u2014 ' + airportName(a), n: 0 };
+        m.set(a.iata, e);
+        return e;
+      };
+      this.routes.forEach((f) => {
+        const x = add(f.from_airport), y = add(f.to_airport);
+        if (x) x.n++;
+        if (y && y !== x) y.n++;
+      });
+      return [...m.values()].sort((p, q) => q.n - p.n || p.iata.localeCompare(q.iata));
+    },
+    get yearOptions() { return groupByYear(this.filteredBase); },
     get activeFlights() {
-      if (this.activeYear === '__all__') return this.routes;
-      const yg = this.yearGroups.find((y) => y.year === this.activeYear);
-      return yg ? yg.flights : [];
+      const base = this.filteredBase;
+      if (this.activeYear === '__all__') return base;
+      return base.filter((f) => ((f.date || '').slice(0, 4) || 'Undated') === String(this.activeYear));
+    },
+    get mapFiltersActive() { return this.airlineFilter !== '__all__' || this.homeAirport !== '__all__' || this.activeYear !== '__all__'; },
+    clearFilters() { this.airlineFilter = '__all__'; this.homeAirport = '__all__'; this.activeYear = '__all__'; this.drawRoutes(); },
+    applyFilters() {
+      if (this.activeYear !== '__all__' && !this.yearOptions.some((y) => String(y.year) === String(this.activeYear))) this.activeYear = '__all__';
+      this.drawRoutes();
     },
     initMap() {
       if (typeof L === 'undefined') { this.error = 'The map library did not load.'; return; }
@@ -1161,54 +1239,18 @@ function mapView() {
 
 function statsView() {
   return {
-    s: {}, loading: true, error: '', page: 'airlines', metric: 'flights', unit: 'km',
+    loading: true, error: '',
     async load() {
       try {
-        const [stats, settings] = await Promise.all([apiJson('api/stats'), apiJson('api/account/settings')]);
-        this.s = stats;
-        this.unit = settings.distance_unit || 'km';
+        const [fr, settings] = await Promise.all([apiJson('api/flights'), apiJson('api/account/settings')]);
         this.loading = false;
+        await this.$nextTick();
+        const root = this.$refs.statsRoot;
+        if (root) FLStats.mount(root, fr.flights || [], { home: settings.home_country || '', unit: settings.distance_unit === 'mi' ? 'mi' : 'km', airlineLogo: (n) => airlineLogo(n, 120, 120), manufacturerLogo });
       } catch (e) {
+        this.loading = false;
         this.error = 'Could not load statistics: ' + e.message;
       }
-    },
-    fmtTotalDist() {
-      const km = this.unit === 'km' ? this.s.total_distance_km : this.s.total_distance_mi;
-      return Math.round(km).toLocaleString();
-    },
-    fmtDist(obj) {
-      const v = this.unit === 'mi' ? obj.distance_mi : obj.distance_km;
-      return Math.round(v).toLocaleString() + ' ' + this.unit;
-    },
-    val(row) { return this.metric === 'distance' ? (this.unit === 'mi' ? row.distance_mi : row.distance_km) : row.flights; },
-    fmtVal(row) { const v = this.val(row); return this.metric === 'distance' ? Math.round(v).toLocaleString() + ' ' + this.unit : v; },
-    pct(v, list) { const max = Math.max(1, ...list.map((r) => this.val(r))); return Math.round((v / max) * 100); },
-    airlineLogo(name) { return airlineLogo(name, 120, 120); },
-    manufacturerLogo(name) {
-      const urls = {
-        Boeing: 'https://upload.wikimedia.org/wikipedia/commons/4/4f/Boeing_full_logo.svg',
-        Airbus: 'https://cdn.simpleicons.org/airbus',
-        Bombardier: 'https://cdn.simpleicons.org/bombardier',
-        Embraer: 'https://upload.wikimedia.org/wikipedia/commons/5/54/Embraer_logo.svg',
-      };
-      return urls[name] || null;
-    },
-    donutColors: ['#0062e3', '#e70866', '#05203c', '#ffb600', '#0b8a5a', '#8a939d'],
-    donutColor(i) { return this.donutColors[i % this.donutColors.length]; },
-    donutGradient(list) {
-      const total = list.reduce((s, r) => s + this.val(r), 0) || 1;
-      let acc = 0;
-      const stops = list.map((r, i) => {
-        const start = (acc / total) * 100;
-        acc += this.val(r);
-        const end = (acc / total) * 100;
-        return this.donutColor(i) + ' ' + start.toFixed(2) + '% ' + end.toFixed(2) + '%';
-      });
-      return stops.length ? 'conic-gradient(' + stops.join(', ') + ')' : 'transparent';
-    },
-    donutTotalLabel(list) {
-      const sum = list.reduce((a, r) => a + this.val(r), 0);
-      return this.metric === 'distance' ? Math.round(sum).toLocaleString() + ' ' + this.unit : sum;
     },
   };
 }
@@ -1239,12 +1281,53 @@ function companionsView() {
 
 /* ------------------------------------------------------------------- settings */
 
+/* ------------------------------------------------------------ sign in / sign up */
+
+function authView() {
+  return {
+    mode: 'login', username: '', password: '', confirm: '', unit: 'km', homeCountry: '',
+    countries: [], error: '', busy: false, signups: true, hasUsers: true, legacyData: false,
+    async load() {
+      try {
+        const st = await apiJson('api/auth/status');
+        this.signups = st.signups; this.hasUsers = st.hasUsers; this.legacyData = st.legacyData;
+        if (!st.hasUsers) this.mode = 'signup';
+      } catch (e) { /* the form still works */ }
+      try { this.countries = (await apiJson('api/countries')).countries; } catch (e) { this.countries = []; }
+    },
+    setMode(m) { this.mode = m; this.error = ''; },
+    async submit() {
+      this.error = '';
+      const signup = this.mode === 'signup';
+      if (!this.username.trim() || !this.password) { this.error = 'Enter your username and password.'; return; }
+      if (signup) {
+        if (this.password !== this.confirm) { this.error = 'The two passwords do not match.'; return; }
+        if (!this.homeCountry) { this.error = 'Choose your home country.'; return; }
+      }
+      this.busy = true;
+      try {
+        const body = signup
+          ? { username: this.username.trim(), password: this.password, distance_unit: this.unit, home_country: this.homeCountry }
+          : { username: this.username.trim(), password: this.password };
+        const out = await apiJson('api/auth/' + (signup ? 'signup' : 'login'), { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify(body) });
+        this.password = ''; this.confirm = '';
+        window.dispatchEvent(new CustomEvent('fl-signed-in', { detail: out.user }));
+      } catch (e) {
+        this.error = e.message;
+      }
+      this.busy = false;
+    },
+  };
+}
+
 function settingsView() {
   return {
+    username: '',
     unit: 'km', homeCountry: '', countries: [], saved: false,
     replaceOnImport: false, backupMsg: '', backupOk: true,
     async load() {
-      const [s, c] = await Promise.all([apiJson('api/account/settings'), apiJson('api/countries')]);
+      const [s, c, st] = await Promise.all([apiJson('api/account/settings'), apiJson('api/countries'), apiJson('api/auth/status')]);
+      this.username = st.user ? st.user.username : '';
       this.unit = s.distance_unit || 'km';
       this.homeCountry = s.home_country || '';
       this.countries = c.countries;

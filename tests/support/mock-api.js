@@ -8,7 +8,7 @@
 (function () {
   'use strict';
 
-  const KEY = 'flightlog-demo-v4';
+  const KEY = 'flightlog-demo-v5';
   const core = window.FLCore;
 
   class HttpError extends Error {
@@ -79,21 +79,32 @@
 
   /* -------------------------------------------------------------------- state */
 
+  // Accounts live in the browser only (demo/test fixture, so passwords are not hashed). `state` is the signed-in user's data.
   let state;
-  function persist() { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch (e) { /* private mode: stay in memory */ } }
-  function loadState() {
+  let db;
+  function persist() { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch (e) { /* private mode: stay in memory */ } }
+  function freshDb() { return { users: [{ username: 'demo', password: 'demo1234', data: seed() }], session: null }; }
+  function loadDb() {
     try {
       const raw = localStorage.getItem(KEY);
-      if (raw) { const s = JSON.parse(raw); if (s && Array.isArray(s.flights)) return s; }
+      if (raw) { const d = JSON.parse(raw); if (d && Array.isArray(d.users)) return d; }
     } catch (e) { /* fall through to seed */ }
-    return seed();
+    return freshDb();
   }
-  state = loadState();
+  function useSession(name) {
+    db.session = name;
+    const u = db.users.find((x) => x.username.toLowerCase() === String(name).toLowerCase());
+    state = u ? u.data : null;
+  }
+  db = loadDb();
+  // Tests start signed in; the public demo sets window.FL_REQUIRE_LOGIN so the login page shows first.
+  if (!window.FL_REQUIRE_LOGIN && !db.session) db.session = 'demo';
+  useSession(db.session);
   persist();
 
   const baseAirports = new Map();
   for (const r of window.FL_AIRPORTS) baseAirports.set(r[0], { iata: r[0], icao: r[1], name: r[2], city: r[3], country: r[4], lat: r[5], lon: r[6], tz: r[7] || null });
-  const allAirports = () => [...baseAirports.values(), ...state.customAirports.filter((a) => !baseAirports.has(a.iata))];
+  const allAirports = () => [...baseAirports.values(), ...(state ? state.customAirports : []).filter((a) => !baseAirports.has(a.iata))];
   const getAirport = (iata) => baseAirports.get(String(iata || '').toUpperCase()) || state.customAirports.find((a) => a.iata === String(iata || '').toUpperCase());
 
   /* ----------------------------------------------------------------- helpers */
@@ -233,8 +244,41 @@
 
   /* ------------------------------------------------------------------ router */
 
+  const publicUser = (u) => ({ username: u.username, distance_unit: u.data.settings.distance_unit, home_country: u.data.settings.home_country });
+  const currentUser = () => db.users.find((x) => x.username.toLowerCase() === String(db.session || '').toLowerCase()) || null;
+
+  function auth(method, pathname, body) {
+    const b = body || {};
+    if (pathname === '/api/auth/status') {
+      const u = currentUser();
+      return [200, { authenticated: !!u, user: u ? publicUser(u) : null, signups: true, hasUsers: true, legacyData: false }];
+    }
+    if (pathname === '/api/auth/logout') { db.session = null; state = null; persist(); return [200, { ok: true }]; }
+    if (pathname === '/api/auth/login') {
+      const u = db.users.find((x) => x.username.toLowerCase() === String(b.username || '').trim().toLowerCase());
+      if (!u || u.password !== String(b.password || '')) throw new HttpError(401, 'Incorrect username or password.');
+      useSession(u.username); persist();
+      return [200, { user: publicUser(u) }];
+    }
+    if (pathname === '/api/auth/signup') {
+      const username = String(b.username || '').trim();
+      if (!/^[A-Za-z0-9._-]{3,32}$/.test(username)) throw new HttpError(400, 'Username must be 3\u201332 characters: letters, numbers, dots, dashes or underscores.');
+      if (String(b.password || '').length < 8) throw new HttpError(400, 'Password must be at least 8 characters.');
+      if (!['km', 'mi'].includes(b.distance_unit)) throw new HttpError(400, 'Choose miles or kilometres.');
+      if (!str(b.home_country)) throw new HttpError(400, 'Choose your home country.');
+      if (db.users.some((x) => x.username.toLowerCase() === username.toLowerCase())) throw new HttpError(409, 'That username is already taken.');
+      const u = { username, password: String(b.password), data: { settings: { distance_unit: b.distance_unit, home_country: str(b.home_country) }, companions: [], customAirports: [], flights: [] } };
+      db.users.push(u); useSession(username); persist();
+      return [201, { user: publicUser(u) }];
+    }
+    throw new HttpError(404, 'Not found');
+  }
+
   function route(method, pathname, query, body) {
     if (pathname === '/api/health') return [200, { ok: true }];
+    if (pathname.startsWith('/api/auth/')) return auth(method, pathname, body);
+    if (pathname === '/api/countries' && method === 'GET' && !state) return [200, { countries: core.countryCenters([...baseAirports.values()]) }];
+    if (!state) throw new HttpError(401, 'Please sign in.');
 
     if (pathname === '/api/flights') {
       if (method === 'GET') return [200, { flights: listFlights() }];
@@ -429,6 +473,6 @@
 
   window.FL_TEST_API = {
     handle,
-    reset() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } state = seed(); persist(); },
+    reset() { try { localStorage.removeItem(KEY); } catch (e) { /* ignore */ } db = freshDb(); useSession(window.FL_REQUIRE_LOGIN ? null : 'demo'); persist(); },
   };
 })();

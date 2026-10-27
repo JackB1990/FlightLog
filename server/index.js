@@ -17,6 +17,9 @@ const DATA_DIR = process.env.DATA_DIR || path.join(ROOT, 'data');
 const FRONTEND_DIR = process.env.FL_FRONTEND_DIR || path.join(ROOT, 'frontend');
 const PASSWORD = process.env.FL_PASSWORD || '';
 const USERNAME = process.env.FL_USER || 'flightlog';
+// New accounts can be created from the login page unless FL_SIGNUPS is off. The very first account is always allowed.
+const SIGNUPS = !/^(0|false|off|no)$/i.test(String(process.env.FL_SIGNUPS || 'on').trim());
+const SESSION_DAYS = 30;
 const MAX_BODY = 10 * 1024 * 1024;
 
 class HttpError extends Error {
@@ -65,6 +68,19 @@ CREATE TABLE IF NOT EXISTS flight_companions (
   PRIMARY KEY (flight_id, companion_id)
 );
 CREATE INDEX IF NOT EXISTS idx_flights_date ON flights(date);
+CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  password_hash TEXT NOT NULL,
+  distance_unit TEXT NOT NULL DEFAULT 'km',
+  home_country TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE TABLE IF NOT EXISTS sessions (
+  token_hash TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at INTEGER NOT NULL
+);
 `);
 // Trips: flights that belong together share a trip_id. A flight with trip_id NULL is a standalone one-way flight.
 {
@@ -75,6 +91,12 @@ CREATE INDEX IF NOT EXISTS idx_flights_date ON flights(date);
   if (!have.has('price')) db.exec('ALTER TABLE flights ADD COLUMN price REAL');
   if (!have.has('leg_order')) db.exec('ALTER TABLE flights ADD COLUMN leg_order INTEGER NOT NULL DEFAULT 0');
   db.exec('CREATE INDEX IF NOT EXISTS idx_flights_trip ON flights(trip_id)');
+  // Per-account data. user_id NULL = created before accounts existed; it is adopted by the first account.
+  if (!have.has('user_id')) db.exec('ALTER TABLE flights ADD COLUMN user_id TEXT');
+  const compCols = new Set(db.prepare('PRAGMA table_info(travel_companions)').all().map((c) => c.name));
+  if (!compCols.has('user_id')) db.exec('ALTER TABLE travel_companions ADD COLUMN user_id TEXT');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_flights_user ON flights(user_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_companions_user ON travel_companions(user_id)');
   const airportCols = new Set(db.prepare('PRAGMA table_info(airports)').all().map((c) => c.name));
   if (!airportCols.has('tz')) db.exec('ALTER TABLE airports ADD COLUMN tz TEXT');
 }
@@ -153,8 +175,11 @@ function getCountries() {
   return countryCache;
 }
 
+// The signed-in user for the request being handled (set by the HTTP handler; handleApi is synchronous).
+let CU = null;
+
 function getSettings() {
-  const r = db.prepare('SELECT distance_unit, home_country FROM settings WHERE id = 1').get();
+  const r = db.prepare('SELECT distance_unit, home_country FROM users WHERE id = ?').get(CU.id);
   return { distance_unit: r.distance_unit, home_country: r.home_country };
 }
 
@@ -169,11 +194,14 @@ function listFlights() {
     FROM flights f
     JOIN airports fa ON fa.iata = f.from_iata
     JOIN airports ta ON ta.iata = f.to_iata
-    ORDER BY f.date DESC, f.created_at DESC`).all();
+    WHERE f.user_id = ?
+    ORDER BY f.date DESC, f.created_at DESC`).all(CU.id);
   const links = db.prepare(`
     SELECT fc.flight_id, tc.id, tc.name, tc.relationship
     FROM flight_companions fc JOIN travel_companions tc ON tc.id = fc.companion_id
-    ORDER BY tc.name`).all();
+    JOIN flights fl ON fl.id = fc.flight_id
+    WHERE fl.user_id = ? AND tc.user_id = ?
+    ORDER BY tc.name`).all(CU.id, CU.id);
   const byFlight = new Map();
   for (const l of links) {
     if (!byFlight.has(l.flight_id)) byFlight.set(l.flight_id, []);
@@ -240,17 +268,17 @@ function storeFlight(id, prep, trip) {
     const t = trip || { trip_id: null, direction: 'outbound', leg_order: 0 };
     db.prepare(`INSERT INTO flights (id, date, airline, flight_number, aircraft_type, seat_class, seat_number,
       from_iata, to_iata, distance_km, departure_time, arrival_time, actual_departure_time, actual_arrival_time, delay_reason,
-      aircraft_registration, price, trip_id, direction, leg_order)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(flightId, ...cols, t.trip_id, t.direction, t.leg_order);
+      aircraft_registration, price, trip_id, direction, leg_order, user_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(flightId, ...cols, t.trip_id, t.direction, t.leg_order, CU.id);
   } else {
     db.prepare(`UPDATE flights SET date=?, airline=?, flight_number=?, aircraft_type=?, seat_class=?, seat_number=?,
       from_iata=?, to_iata=?, distance_km=?, departure_time=?, arrival_time=?,
-      actual_departure_time=?, actual_arrival_time=?, delay_reason=?, aircraft_registration=?, price=? WHERE id=?`).run(...cols, flightId);
-    if (trip) db.prepare('UPDATE flights SET trip_id=?, direction=?, leg_order=? WHERE id=?').run(trip.trip_id, trip.direction, trip.leg_order, flightId);
+      actual_departure_time=?, actual_arrival_time=?, delay_reason=?, aircraft_registration=?, price=? WHERE id=? AND user_id=?`).run(...cols, flightId, CU.id);
+    if (trip) db.prepare('UPDATE flights SET trip_id=?, direction=?, leg_order=? WHERE id=? AND user_id=?').run(trip.trip_id, trip.direction, trip.leg_order, flightId, CU.id);
     db.prepare('DELETE FROM flight_companions WHERE flight_id = ?').run(flightId);
   }
-  const link = db.prepare('INSERT OR IGNORE INTO flight_companions (flight_id, companion_id) SELECT ?, id FROM travel_companions WHERE id = ?');
-  for (const cid of companionIds) link.run(flightId, cid);
+  const link = db.prepare('INSERT OR IGNORE INTO flight_companions (flight_id, companion_id) SELECT ?, id FROM travel_companions WHERE id = ? AND user_id = ?');
+  for (const cid of companionIds) link.run(flightId, cid, CU.id);
   return flightId;
 }
 
@@ -268,9 +296,9 @@ function writeFlight(id, b) {
 const MAX_LEGS = 12;
 
 function tripRows(key) {
-  let rows = db.prepare(`SELECT * FROM flights WHERE trip_id = ?
-    ORDER BY CASE direction WHEN 'return' THEN 1 ELSE 0 END, leg_order, date, departure_time`).all(key);
-  if (!rows.length) rows = db.prepare('SELECT * FROM flights WHERE id = ? AND trip_id IS NULL').all(key);
+  let rows = db.prepare(`SELECT * FROM flights WHERE trip_id = ? AND user_id = ?
+    ORDER BY CASE direction WHEN 'return' THEN 1 ELSE 0 END, leg_order, date, departure_time`).all(key, CU.id);
+  if (!rows.length) rows = db.prepare('SELECT * FROM flights WHERE id = ? AND trip_id IS NULL AND user_id = ?').all(key, CU.id);
   return rows;
 }
 
@@ -313,7 +341,7 @@ function saveTrip(key, body) {
       keep.add(id);
       if (!first) first = id;
     }
-    for (const r of existing) if (!keep.has(r.id)) db.prepare('DELETE FROM flights WHERE id = ?').run(r.id);
+    for (const r of existing) if (!keep.has(r.id)) db.prepare('DELETE FROM flights WHERE id = ? AND user_id = ?').run(r.id, CU.id);
     return { key: tripId || first, ids: [...keep] };
   });
 }
@@ -321,12 +349,12 @@ function saveTrip(key, body) {
 function deleteTrip(key) {
   const rows = tripRows(key);
   if (!rows.length) throw new HttpError(404, 'Trip not found');
-  tx(() => { for (const r of rows) db.prepare('DELETE FROM flights WHERE id = ?').run(r.id); });
+  tx(() => { for (const r of rows) db.prepare('DELETE FROM flights WHERE id = ? AND user_id = ?').run(r.id, CU.id); });
 }
 
 function exportAll() {
-  const flights = db.prepare('SELECT * FROM flights ORDER BY date, created_at').all().map((f) => ({ ...f }));
-  const links = db.prepare('SELECT flight_id, companion_id FROM flight_companions').all();
+  const flights = db.prepare('SELECT * FROM flights WHERE user_id = ? ORDER BY date, created_at').all(CU.id).map((f) => { const { user_id, ...rest } = f; return { ...rest }; });
+  const links = db.prepare('SELECT fc.flight_id, fc.companion_id FROM flight_companions fc JOIN flights f ON f.id = fc.flight_id WHERE f.user_id = ?').all(CU.id);
   for (const f of flights) f.companion_ids = links.filter((l) => l.flight_id === f.id).map((l) => l.companion_id);
   const used = new Set(flights.flatMap((f) => [f.from_iata, f.to_iata]));
   const airports = db.prepare('SELECT iata, icao, name, city, country, lat, lon, tz FROM airports').all()
@@ -336,7 +364,7 @@ function exportAll() {
     version: 1,
     exported_at: new Date().toISOString(),
     settings: getSettings(),
-    companions: db.prepare('SELECT id, name, relationship FROM travel_companions ORDER BY name').all().map((c) => ({ ...c })),
+    companions: db.prepare('SELECT id, name, relationship FROM travel_companions WHERE user_id = ? ORDER BY name').all(CU.id).map((c) => ({ ...c })),
     airports,
     flights,
   };
@@ -352,7 +380,8 @@ function importAll(data, mode) {
   const skipped = [];
   tx(() => {
     if (mode === 'replace') {
-      db.exec('DELETE FROM flight_companions; DELETE FROM flights; DELETE FROM travel_companions;');
+      db.prepare('DELETE FROM flights WHERE user_id = ?').run(CU.id);
+      db.prepare('DELETE FROM travel_companions WHERE user_id = ?').run(CU.id);
     }
     const insAirport = db.prepare('INSERT OR IGNORE INTO airports (iata, icao, name, city, country, lat, lon, tz) VALUES (?,?,?,?,?,?,?,?)');
     for (const a of airports) {
@@ -361,21 +390,29 @@ function importAll(data, mode) {
         if (a.tz && core.validTz(a.tz)) db.prepare('UPDATE airports SET tz = ? WHERE iata = ? AND tz IS NULL').run(String(a.tz), String(a.iata).toUpperCase());
       }
     }
-    const insCompanion = db.prepare('INSERT OR IGNORE INTO travel_companions (id, name, relationship) VALUES (?,?,?)');
+    // Ids that already belong to another account are replaced with fresh ones, so an import can never touch someone else's rows.
+    const owner = (table, id) => { const r = db.prepare(`SELECT user_id FROM ${table} WHERE id = ?`).get(id); return r ? r.user_id : undefined; };
+    const freeId = (table, id) => { const o = owner(table, id); return o === undefined || o === CU.id ? id : crypto.randomUUID(); };
+    const companionMap = new Map();
+    const insCompanion = db.prepare('INSERT OR IGNORE INTO travel_companions (id, name, relationship, user_id) VALUES (?,?,?,?)');
     for (const c of companions) {
-      if (c && c.id && c.name) insCompanion.run(String(c.id), String(c.name).slice(0, 100), str(c.relationship, 60));
+      if (c && c.id && c.name) {
+        const id = freeId('travel_companions', String(c.id));
+        companionMap.set(String(c.id), id);
+        insCompanion.run(id, String(c.name).slice(0, 100), str(c.relationship, 60), CU.id);
+      }
     }
     const upsert = db.prepare(`INSERT INTO flights (id, date, airline, flight_number, aircraft_type, seat_class, seat_number,
         from_iata, to_iata, distance_km, departure_time, arrival_time, actual_departure_time, actual_arrival_time, delay_reason,
-        aircraft_registration, price, trip_id, direction, leg_order)
-      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        aircraft_registration, price, trip_id, direction, leg_order, user_id)
+      VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(id) DO UPDATE SET date=excluded.date, airline=excluded.airline, flight_number=excluded.flight_number,
         aircraft_type=excluded.aircraft_type, seat_class=excluded.seat_class, seat_number=excluded.seat_number,
         from_iata=excluded.from_iata, to_iata=excluded.to_iata, distance_km=excluded.distance_km,
         departure_time=excluded.departure_time, arrival_time=excluded.arrival_time,
         actual_departure_time=excluded.actual_departure_time, actual_arrival_time=excluded.actual_arrival_time,
-        delay_reason=excluded.delay_reason, aircraft_registration=excluded.aircraft_registration, price=excluded.price, trip_id=excluded.trip_id, direction=excluded.direction, leg_order=excluded.leg_order`);
-    const link = db.prepare('INSERT OR IGNORE INTO flight_companions (flight_id, companion_id) SELECT ?, id FROM travel_companions WHERE id = ?');
+        delay_reason=excluded.delay_reason, aircraft_registration=excluded.aircraft_registration, price=excluded.price, trip_id=excluded.trip_id, direction=excluded.direction, leg_order=excluded.leg_order WHERE flights.user_id = excluded.user_id`);
+    const link = db.prepare('INSERT OR IGNORE INTO flight_companions (flight_id, companion_id) SELECT ?, id FROM travel_companions WHERE id = ? AND user_id = ?');
     for (const raw of data.flights) {
       try {
         const rawDate = raw && raw.date ? String(raw.date).slice(0, 10) : '';
@@ -383,14 +420,14 @@ function importAll(data, mode) {
         const from = getAirport(f.from_iata);
         const to = getAirport(f.to_iata);
         if (!from || !to) throw new Error(`unknown airport ${!from ? f.from_iata : f.to_iata}`);
-        const id = raw.id ? String(raw.id) : crypto.randomUUID();
+        const id = raw.id ? freeId('flights', String(raw.id)) : crypto.randomUUID();
         const distance = Number.isFinite(Number(raw.distance_km)) && raw.distance_km !== null ? Number(raw.distance_km) : core.haversineKm(from, to);
         upsert.run(id, f.date, f.airline, f.flight_number, f.aircraft_type, f.seat_class, f.seat_number,
           f.from_iata, f.to_iata, distance, f.departure_time, f.arrival_time,
           f.actual_departure_time, f.actual_arrival_time, f.delay_reason, f.aircraft_registration, f.price,
-          raw.trip_id ? String(raw.trip_id).slice(0, 64) : null, raw.direction === 'return' ? 'return' : 'outbound', Number.isInteger(raw.leg_order) ? raw.leg_order : 0);
+          raw.trip_id ? String(raw.trip_id).slice(0, 64) : null, raw.direction === 'return' ? 'return' : 'outbound', Number.isInteger(raw.leg_order) ? raw.leg_order : 0, CU.id);
         db.prepare('DELETE FROM flight_companions WHERE flight_id = ?').run(id);
-        for (const cid of Array.isArray(raw.companion_ids) ? raw.companion_ids : []) link.run(id, String(cid));
+        for (const cid of Array.isArray(raw.companion_ids) ? raw.companion_ids : []) link.run(id, companionMap.get(String(cid)) || String(cid), CU.id);
         imported += 1;
       } catch (e) {
         skipped.push(`${raw && raw.date ? raw.date : '?'} ${raw && raw.from_iata ? raw.from_iata : ''}-${raw && raw.to_iata ? raw.to_iata : ''}: ${e.message}`);
@@ -398,10 +435,10 @@ function importAll(data, mode) {
     }
     if (data.settings && typeof data.settings === 'object') {
       if (['km', 'mi'].includes(data.settings.distance_unit)) {
-        db.prepare('UPDATE settings SET distance_unit = ? WHERE id = 1').run(data.settings.distance_unit);
+        db.prepare('UPDATE users SET distance_unit = ? WHERE id = ?').run(data.settings.distance_unit, CU.id);
       }
       if (data.settings.home_country) {
-        db.prepare('UPDATE settings SET home_country = ? WHERE id = 1').run(String(data.settings.home_country));
+        db.prepare('UPDATE users SET home_country = ? WHERE id = ?').run(String(data.settings.home_country), CU.id);
       }
     }
   });
@@ -412,7 +449,6 @@ function importAll(data, mode) {
 /* ------------------------------------------------------------------ router */
 
 function handleApi(method, pathname, query, body) {
-  if (pathname === '/api/health') return [200, { ok: true }];
 
   if (pathname === '/api/flights') {
     if (method === 'GET') return [200, { flights: listFlights() }];
@@ -423,14 +459,15 @@ function handleApi(method, pathname, query, body) {
   let m = pathname.match(/^\/api\/flights\/([^/]+)$/);
   if (m) {
     const id = decodeURIComponent(m[1]);
-    const row = db.prepare('SELECT * FROM flights WHERE id = ?').get(id);
+    const row = db.prepare('SELECT * FROM flights WHERE id = ? AND user_id = ?').get(id, CU.id);
     if (!row) throw new HttpError(404, 'Flight not found');
     if (method === 'GET') {
       const ids = db.prepare('SELECT companion_id FROM flight_companions WHERE flight_id = ?').all(id).map((r) => r.companion_id);
-      return [200, { ...row, companion_ids: ids }];
+      const { user_id, ...pub } = row;
+      return [200, { ...pub, companion_ids: ids }];
     }
     if (method === 'PUT') { writeFlight(id, body || {}); return [200, { id }]; }
-    if (method === 'DELETE') { db.prepare('DELETE FROM flights WHERE id = ?').run(id); return [204, null]; }
+    if (method === 'DELETE') { db.prepare('DELETE FROM flights WHERE id = ? AND user_id = ?').run(id, CU.id); return [204, null]; }
     throw new HttpError(405, 'Method not allowed');
   }
 
@@ -479,14 +516,14 @@ function handleApi(method, pathname, query, body) {
 
   if (pathname === '/api/companions') {
     if (method === 'GET') {
-      return [200, { companions: db.prepare('SELECT id, name, relationship FROM travel_companions ORDER BY name').all().map((r) => ({ ...r })) }];
+      return [200, { companions: db.prepare('SELECT id, name, relationship FROM travel_companions WHERE user_id = ? ORDER BY name').all(CU.id).map((r) => ({ ...r })) }];
     }
     if (method === 'POST') {
       const name = str((body || {}).name, 100);
       if (!name) throw new HttpError(400, 'name is required');
       const id = crypto.randomUUID();
       const relationship = str((body || {}).relationship, 60);
-      db.prepare('INSERT INTO travel_companions (id, name, relationship) VALUES (?,?,?)').run(id, name, relationship);
+      db.prepare('INSERT INTO travel_companions (id, name, relationship, user_id) VALUES (?,?,?,?)').run(id, name, relationship, CU.id);
       return [201, { id, name, relationship }];
     }
     throw new HttpError(405, 'Method not allowed');
@@ -495,13 +532,13 @@ function handleApi(method, pathname, query, body) {
   m = pathname.match(/^\/api\/companions\/([^/]+)$/);
   if (m) {
     const id = decodeURIComponent(m[1]);
-    const row = db.prepare('SELECT id, name, relationship FROM travel_companions WHERE id = ?').get(id);
+    const row = db.prepare('SELECT id, name, relationship FROM travel_companions WHERE id = ? AND user_id = ?').get(id, CU.id);
     if (!row) throw new HttpError(404, 'Companion not found');
-    if (method === 'DELETE') { db.prepare('DELETE FROM travel_companions WHERE id = ?').run(id); return [204, null]; }
+    if (method === 'DELETE') { db.prepare('DELETE FROM travel_companions WHERE id = ? AND user_id = ?').run(id, CU.id); return [204, null]; }
     if (method === 'PUT') {
       const name = str((body || {}).name, 100) || row.name;
       const relationship = 'relationship' in (body || {}) ? str(body.relationship, 60) : row.relationship;
-      db.prepare('UPDATE travel_companions SET name = ?, relationship = ? WHERE id = ?').run(name, relationship, id);
+      db.prepare('UPDATE travel_companions SET name = ?, relationship = ? WHERE id = ? AND user_id = ?').run(name, relationship, id, CU.id);
       return [200, { id, name, relationship }];
     }
     throw new HttpError(405, 'Method not allowed');
@@ -512,8 +549,8 @@ function handleApi(method, pathname, query, body) {
     if (method === 'PUT') {
       const b = body || {};
       if (b.distance_unit && !['km', 'mi'].includes(b.distance_unit)) throw new HttpError(400, "distance_unit must be 'km' or 'mi'");
-      if (b.distance_unit) db.prepare('UPDATE settings SET distance_unit = ? WHERE id = 1').run(b.distance_unit);
-      if ('home_country' in b) db.prepare('UPDATE settings SET home_country = ? WHERE id = 1').run(str(b.home_country));
+      if (b.distance_unit) db.prepare('UPDATE users SET distance_unit = ? WHERE id = ?').run(b.distance_unit, CU.id);
+      if ('home_country' in b) db.prepare('UPDATE users SET home_country = ? WHERE id = ?').run(str(b.home_country), CU.id);
       return [200, getSettings()];
     }
     throw new HttpError(405, 'Method not allowed');
@@ -543,20 +580,158 @@ function send(res, status, data, headers = {}) {
   res.end(payload);
 }
 
-function authorised(req) {
-  if (!PASSWORD) return true;
+/* ---------------------------------------------------------------- accounts */
+
+const USERNAME_RE = /^[A-Za-z0-9._-]{3,32}$/;
+const COOKIE = 'fl_session';
+
+function hashPassword(pw) {
+  const salt = crypto.randomBytes(16);
+  const h = crypto.scryptSync(pw, salt, 64, { N: 16384, r: 8, p: 1 });
+  return `scrypt$${salt.toString('base64')}$${h.toString('base64')}`;
+}
+function verifyPassword(pw, stored) {
+  const [alg, salt, hash] = String(stored || '').split('$');
+  if (alg !== 'scrypt' || !salt || !hash) return false;
+  const expected = Buffer.from(hash, 'base64');
+  const got = crypto.scryptSync(pw, Buffer.from(salt, 'base64'), expected.length, { N: 16384, r: 8, p: 1 });
+  return crypto.timingSafeEqual(got, expected);
+}
+const sha = (t) => crypto.createHash('sha256').update(t).digest('hex');
+
+function publicUser(u) { return { username: u.username, distance_unit: u.distance_unit, home_country: u.home_country }; }
+function userCount() { return db.prepare('SELECT COUNT(*) AS n FROM users').get().n; }
+
+// Flights and companions saved before accounts existed belong to the first account.
+function adoptLegacyData(userId) {
+  db.prepare('UPDATE flights SET user_id = ? WHERE user_id IS NULL').run(userId);
+  db.prepare('UPDATE travel_companions SET user_id = ? WHERE user_id IS NULL').run(userId);
+}
+function hasLegacyData() {
+  return !!db.prepare('SELECT 1 FROM flights WHERE user_id IS NULL LIMIT 1').get() || !!db.prepare('SELECT 1 FROM travel_companions WHERE user_id IS NULL LIMIT 1').get();
+}
+
+function createUser(username, password, unit, country) {
+  const id = crypto.randomUUID();
+  tx(() => {
+    db.prepare('INSERT INTO users (id, username, password_hash, distance_unit, home_country) VALUES (?,?,?,?,?)')
+      .run(id, username, hashPassword(password), unit, country);
+    if (userCount() === 1) adoptLegacyData(id);
+  });
+  return db.prepare('SELECT * FROM users WHERE id = ?').get(id);
+}
+
+// FL_USER / FL_PASSWORD from earlier versions: that login keeps working, on the new login page.
+function ensureEnvUser() {
+  if (!PASSWORD) return;
+  const existing = db.prepare('SELECT * FROM users WHERE username = ?').get(USERNAME);
+  if (existing) {
+    if (!verifyPassword(PASSWORD, existing.password_hash)) db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hashPassword(PASSWORD), existing.id);
+    if (userCount() === 1) adoptLegacyData(existing.id);
+    return;
+  }
+  const legacy = db.prepare('SELECT distance_unit, home_country FROM settings WHERE id = 1').get() || {};
+  const hadUsers = userCount() > 0;
+  const u = createUser(USERNAME, PASSWORD, legacy.distance_unit || 'km', legacy.home_country || null);
+  // Other accounts already exist but old data is still unclaimed: it belongs to the person who used FL_USER.
+  if (hadUsers) adoptLegacyData(u.id);
+  console.log(`[flightlog] account "${USERNAME}" is ready (from FL_USER / FL_PASSWORD)`);
+}
+db.prepare('DELETE FROM sessions WHERE expires_at < ?').run(Date.now());
+ensureEnvUser();
+
+const failures = new Map();
+function tooManyAttempts(keys) {
+  const now = Date.now();
+  return keys.some(([k, max]) => (failures.get(k) || []).filter((t) => now - t < 600000).length >= max);
+}
+function noteFailure(keys) {
+  const now = Date.now();
+  for (const [k] of keys) failures.set(k, [...(failures.get(k) || []).filter((t) => now - t < 600000), now]);
+}
+function attemptKeys(req, username) {
+  return [['u:' + String(username || '').toLowerCase(), 10], ['ip:' + (req.socket.remoteAddress || ''), 40]];
+}
+
+function cookieValue(req, name) {
+  for (const part of String(req.headers.cookie || '').split(';')) {
+    const i = part.indexOf('=');
+    if (i > 0 && part.slice(0, i).trim() === name) return decodeURIComponent(part.slice(i + 1).trim());
+  }
+  return null;
+}
+function sessionCookie(req, token, maxAge) {
+  const secure = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim() === 'https' || req.socket.encrypted;
+  return `${COOKIE}=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${maxAge}${secure ? '; Secure' : ''}`;
+}
+function startSession(req, userId) {
+  const token = crypto.randomBytes(32).toString('base64url');
+  db.prepare('INSERT INTO sessions (token_hash, user_id, expires_at) VALUES (?,?,?)').run(sha(token), userId, Date.now() + SESSION_DAYS * 86400000);
+  return { 'Set-Cookie': sessionCookie(req, token, SESSION_DAYS * 86400) };
+}
+
+// The signed-in user: from the session cookie, or HTTP Basic credentials (handy for scripts and backups).
+function currentUser(req) {
+  const token = cookieValue(req, COOKIE);
+  if (token) {
+    const r = db.prepare('SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token_hash = ? AND s.expires_at > ?').get(sha(token), Date.now());
+    if (r) return r;
+  }
   const header = req.headers.authorization || '';
-  if (!header.startsWith('Basic ')) return false;
-  const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
-  const idx = decoded.indexOf(':');
-  const user = decoded.slice(0, idx);
-  const pass = decoded.slice(idx + 1);
-  const safeEq = (a, b) => {
-    const ha = crypto.createHash('sha256').update(a).digest();
-    const hb = crypto.createHash('sha256').update(b).digest();
-    return crypto.timingSafeEqual(ha, hb);
-  };
-  return safeEq(user, USERNAME) && safeEq(pass, PASSWORD);
+  if (header.startsWith('Basic ')) {
+    const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
+    const idx = decoded.indexOf(':');
+    const name = decoded.slice(0, idx);
+    const keys = attemptKeys(req, name);
+    if (tooManyAttempts(keys)) return null;
+    const u = db.prepare('SELECT * FROM users WHERE username = ?').get(name);
+    if (u && verifyPassword(decoded.slice(idx + 1), u.password_hash)) return u;
+    noteFailure(keys);
+  }
+  return null;
+}
+
+function authStatus(user) {
+  return { authenticated: !!user, user: user ? publicUser(user) : null, signups: SIGNUPS || userCount() === 0, hasUsers: userCount() > 0, legacyData: userCount() === 0 && hasLegacyData() };
+}
+
+function handleAuth(req, method, pathname, body) {
+  if (pathname === '/api/auth/status' && method === 'GET') return [200, authStatus(currentUser(req))];
+  if (pathname === '/api/auth/logout' && method === 'POST') {
+    const token = cookieValue(req, COOKIE);
+    if (token) db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(sha(token));
+    return [200, { ok: true }, { 'Set-Cookie': sessionCookie(req, '', 0) }];
+  }
+  if (pathname === '/api/auth/login' && method === 'POST') {
+    const b = body || {};
+    const username = String(b.username || '').trim();
+    const keys = attemptKeys(req, username);
+    if (tooManyAttempts(keys)) throw new HttpError(429, 'Too many failed attempts. Please wait a few minutes and try again.');
+    const u = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
+    if (!u || !verifyPassword(String(b.password || ''), u.password_hash)) {
+      noteFailure(keys);
+      throw new HttpError(401, 'Incorrect username or password.');
+    }
+    return [200, { user: publicUser(u) }, startSession(req, u.id)];
+  }
+  if (pathname === '/api/auth/signup' && method === 'POST') {
+    const b = body || {};
+    if (userCount() > 0 && !SIGNUPS) throw new HttpError(403, 'New accounts are switched off on this server.');
+    const keys = [['signup-ip:' + (req.socket.remoteAddress || ''), 20]];
+    if (tooManyAttempts(keys)) throw new HttpError(429, 'Too many attempts. Please wait a few minutes and try again.');
+    noteFailure(keys);
+    const username = String(b.username || '').trim();
+    const password = String(b.password || '');
+    if (!USERNAME_RE.test(username)) throw new HttpError(400, 'Username must be 3–32 characters: letters, numbers, dots, dashes or underscores.');
+    if (password.length < 8) throw new HttpError(400, 'Password must be at least 8 characters.');
+    if (!['km', 'mi'].includes(b.distance_unit)) throw new HttpError(400, 'Choose miles or kilometres.');
+    const country = str(b.home_country);
+    if (!country) throw new HttpError(400, 'Choose your home country.');
+    if (db.prepare('SELECT 1 FROM users WHERE username = ?').get(username)) throw new HttpError(409, 'That username is already taken.');
+    const u = createUser(username, password, b.distance_unit, country);
+    return [201, { user: publicUser(u) }, startSession(req, u.id)];
+  }
+  throw new HttpError(404, 'Not found');
 }
 
 function readBody(req) {
@@ -601,14 +776,27 @@ const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://localhost');
     const pathname = url.pathname;
 
-    if (pathname !== '/api/health' && !authorised(req)) {
-      return send(res, 401, { error: 'Authentication required' }, { 'WWW-Authenticate': 'Basic realm="FlightLog", charset="UTF-8"' });
-    }
-
     if (pathname.startsWith('/api/')) {
       const method = req.method || 'GET';
-      const body = method === 'POST' || method === 'PUT' ? await readBody(req) : undefined;
-      const [status, data, headers] = handleApi(method, pathname, url.searchParams, body);
+      let body;
+      if (method === 'POST' || method === 'PUT') {
+        // Browsers can only send JSON cross-site after a permission check, which keeps other websites from posting here.
+        if (Number(req.headers['content-length'] || 0) > 0 && !/^application\/json/i.test(String(req.headers['content-type'] || ''))) throw new HttpError(415, 'Send JSON');
+        body = await readBody(req);
+      }
+      if (pathname === '/api/health') return send(res, 200, { ok: true });
+      if (pathname.startsWith('/api/auth/')) {
+        const [status, data, headers] = handleAuth(req, method, pathname, body);
+        return send(res, status, data, headers || {});
+      }
+      // The list of countries is needed on the sign-up form, before there is an account.
+      if (pathname === '/api/countries' && method === 'GET') return send(res, 200, { countries: getCountries() });
+      const user = currentUser(req);
+      if (!user) return send(res, 401, { error: 'Please sign in.' });
+      CU = user;
+      let out;
+      try { out = handleApi(method, pathname, url.searchParams, body); } finally { CU = null; }
+      const [status, data, headers] = out;
       return send(res, status, data, headers || {});
     }
 
@@ -623,7 +811,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[flightlog] listening on :${PORT}  data: ${DATA_DIR}  auth: ${PASSWORD ? 'password required' : 'OFF (set FL_PASSWORD to enable)'}`);
+  console.log(`[flightlog] listening on :${PORT}  data: ${DATA_DIR}  accounts: ${userCount()}  sign-ups: ${SIGNUPS ? 'on' : 'off'}`);
 });
 
 function shutdown() {

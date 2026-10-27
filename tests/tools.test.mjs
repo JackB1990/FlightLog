@@ -33,7 +33,7 @@ test('build-airports converts an OurAirports-style CSV', () => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-test('FL_PASSWORD turns on basic auth (health stays open)', async () => {
+test('FL_USER / FL_PASSWORD keep working (no browser pop-up; the page itself is public)', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'fv-auth-'));
   const port = 3800 + Math.floor(Math.random() * 90);
   const proc = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', join(root, 'server/index.js')], {
@@ -49,8 +49,8 @@ test('FL_PASSWORD turns on basic auth (health stays open)', async () => {
     assert.equal((await fetch(base + '/api/health')).status, 200);
     const denied = await fetch(base + '/api/flights');
     assert.equal(denied.status, 401);
-    assert.match(denied.headers.get('www-authenticate') || '', /Basic/);
-    assert.equal((await fetch(base + '/')).status, 401);
+    assert.equal(denied.headers.get('www-authenticate'), null, 'no generic browser sign-in pop-up');
+    assert.equal((await fetch(base + '/')).status, 200);
     const good = 'Basic ' + Buffer.from('jack:s3cret').toString('base64');
     assert.equal((await fetch(base + '/api/flights', { headers: { Authorization: good } })).status, 200);
     const bad = 'Basic ' + Buffer.from('jack:wrong').toString('base64');

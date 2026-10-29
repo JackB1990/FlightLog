@@ -32,6 +32,8 @@ for (const a of FL_DATA.AIRLINES) {
 function airlineLogo(name, w, h) {
   if (name === 'Monarch Airlines') return 'logos/monarch.svg';
   const code = AIRLINE_CODES[name];
+  const local = (window.FL_DATA.LOCAL_LOGOS || {})[name];
+  if (local) return local;
   return code ? 'https://pics.avs.io/' + w + '/' + h + '/' + code + '.png' : null;
 }
 
@@ -176,7 +178,7 @@ function buildItems(flights) {
   const items = [];
   const trips = new Map();
   flights.forEach((f) => {
-    if (!f.trip_id) { items.push({ kind: 'flight', key: f.id, date: f.date, distance_km: Number(f.distance_km) || 0, legs: [f], f, delayed: !!f.delay_reason, rows: [buildJourney([f])] }); return; }
+    if (!f.trip_id) { items.push({ kind: 'flight', key: f.id, package_id: f.package_id || null, package_name: f.package_name || null, date: f.date, distance_km: Number(f.distance_km) || 0, legs: [f], f, delayed: !!f.delay_reason, rows: [buildJourney([f])] }); return; }
     if (!trips.has(f.trip_id)) trips.set(f.trip_id, []);
     trips.get(f.trip_id).push(f);
   });
@@ -192,6 +194,7 @@ function buildItems(flights) {
     const dates = legs.map((l) => l.date).sort();
     items.push({
       kind: 'trip', key, type: inbound.length ? 'return' : 'oneway',
+      package_id: (legs.find((l) => l.package_id) || {}).package_id || null, package_name: (legs.find((l) => l.package_id) || {}).package_name || null,
       date: dates[0], endDate: dates[dates.length - 1],
       legs, outbound, inbound,
       origin: first.from_airport, destination: lastOut.to_airport,
@@ -296,9 +299,9 @@ function localToday() {
 
 /* -------------------------------------------------------------------- shell */
 
-const ROUTES = ['home', 'flight', 'trip', 'map', 'stats', 'add', 'companions', 'settings'];
-const STRIPS = { home: 'All your flights', flight: 'Flight details', trip: 'Trip details', map: 'Where you have flown', stats: 'Your flying in numbers', add: 'Log a flight', companions: 'People you travel with', settings: 'Preferences and backups' };
-const TITLES = { home: 'Flights', flight: 'Flight Details', trip: 'Trip Details', map: 'Route Map', stats: 'Statistics', add: 'Log a Flight', companions: 'Travel Companions', settings: 'Settings' };
+const ROUTES = ['home', 'flight', 'trip', 'map', 'stats', 'add', 'stays', 'stay', 'stay-add', 'packages', 'package', 'package-add', 'companions', 'settings'];
+const STRIPS = { home: 'All your flights', flight: 'Flight details', trip: 'Trip details', map: 'Where you have flown', stats: 'Your flying in numbers', add: 'Log a flight', stays: 'Where you have stayed', stay: 'Stay details', 'stay-add': 'Log a stay', packages: 'Your package holidays', package: 'Package details', 'package-add': 'Log a package', companions: 'People you travel with', settings: 'Preferences and backups' };
+const TITLES = { home: 'Flights', flight: 'Flight Details', trip: 'Trip Details', map: 'Route Map', stats: 'Statistics', add: 'Log a Flight', stays: 'Stays', stay: 'Stay Details', 'stay-add': 'Log a Stay', packages: 'Packages', package: 'Package Details', 'package-add': 'Log a Package', companions: 'Travel Companions', settings: 'Settings' };
 
 function shell() {
   return {
@@ -320,7 +323,7 @@ function shell() {
       this.auth = 'out';
       location.hash = '#/';
     },
-    get stripText() { return this.route === 'add' && this.params.id ? 'Edit flight' : STRIPS[this.route]; },
+    get stripText() { return this.route === 'add' && this.params.id ? 'Edit flight' : this.route === 'stay-add' && this.params.id ? 'Edit stay' : this.route === 'package-add' && this.params.id ? 'Edit package' : STRIPS[this.route]; },
     init() {
       this.parse();
       window.addEventListener('hashchange', () => this.parse());
@@ -425,7 +428,8 @@ function flightList() {
     sideLine(f) {
       return [f.seat_class, f.seat_number ? 'Seat ' + f.seat_number : ''].filter(Boolean).join(' · ') || ' ';
     },
-    itemPrice(it) { return it.legs.reduce((n, l) => n + (Number(l.price) || 0), 0); },
+    // a flight or trip inside a package has no price of its own: the package carries the cost
+    itemPrice(it) { return it.package_id ? 0 : it.legs.reduce((n, l) => n + (Number(l.price) || 0), 0); },
     fmtMoney(v) { return '\u00a3' + Number(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); },
     sideSummary(it) {
       const n = it.legs.length;
@@ -576,8 +580,8 @@ function flightDetail(id) {
       const f = this.f;
       return [
         ['Cabin class', f.seat_class || dash], ['Seat', f.seat_number || dash],
-        ['Travelling with', f.companions && f.companions.length ? f.companions.map((c) => c.name + (c.relationship ? ' (' + c.relationship + ')' : '')).join(', ') : 'Travelling solo'],
-        ...(Number(f.price) > 0 ? [['Total cost', this.fmtMoney(f.price)]] : []),
+        ['Travelling with', f.companions && f.companions.length ? f.companions.map((c) => companionLabel(c, f.date)).join(', ') : 'Travelling solo'],
+        ...(f.package_id ? [['Total cost', 'Part of a package']] : Number(f.price) > 0 ? [['Total cost', this.fmtMoney(f.price)]] : []),
       ];
     },
     fmtMoney(v) { return '\u00a3' + Number(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); },
@@ -632,7 +636,7 @@ function tripDetail(key) {
       if (it.inbound.length) out.push({ id: 'return', label: 'Return', title: 'Return journey', legs: it.inbound });
       return out;
     },
-    get totalCost() { return this.item ? this.item.legs.reduce((n, l) => n + (Number(l.price) || 0), 0) : 0; },
+    get totalCost() { return this.item && !this.item.package_id ? this.item.legs.reduce((n, l) => n + (Number(l.price) || 0), 0) : 0; },
     get summaryFacts() {
       const it = this.item;
       const airlines = [...new Set(it.legs.map((l) => l.airline).filter(Boolean))].join(', ');
@@ -643,8 +647,8 @@ function tripDetail(key) {
         ['Total distance', km ? this.fmtDist(km) : ''],
         ['Airlines', airlines],
         ['Cabin', classes],
-        ['Travelling with', it.companions.length ? it.companions.map((c) => c.name + (c.relationship ? ' (' + c.relationship + ')' : '')).join(', ') : 'Travelling solo'],
-        ['Total cost', this.totalCost > 0 ? this.fmtMoney(this.totalCost) : ''],
+        ['Travelling with', it.companions.length ? it.companions.map((c) => companionLabel(c, it.date)).join(', ') : 'Travelling solo'],
+        ['Total cost', it.package_id ? 'Part of a package' : this.totalCost > 0 ? this.fmtMoney(this.totalCost) : ''],
       ];
       // Blank fields are not shown; they appear once the trip is edited to include them.
       return rows.filter((r) => r[1] && String(r[1]).trim() !== '');
@@ -820,6 +824,7 @@ function flightForm(editId) {
     legs: { outbound: [], return: [] },
     companion_ids: [],
     price: '',
+    pkg: null,
     companions: [],
     airlines: FL_DATA.AIRLINES,
     aircraftTypes: FL_DATA.AIRCRAFT_TYPES,
@@ -832,6 +837,7 @@ function flightForm(editId) {
         if (this.editId) {
           const trip = await apiJson('api/trips/' + encodeURIComponent(this.editId));
           this.type = trip.type;
+          this.pkg = trip.package_id ? { id: trip.package_id, name: trip.package_name } : null;
           trip.legs.forEach((l) => this.legs[l.direction === 'return' ? 'return' : 'outbound'].push(newLeg(l)));
           this.companion_ids = (trip.legs[0] && trip.legs[0].companion_ids) || [];
           const paid = trip.legs.reduce((n, l) => n + (Number(l.price) || 0), 0);
@@ -935,7 +941,8 @@ function flightForm(editId) {
     },
     pickSelect(kind, leg, o) { leg[this.selectField(kind)] = o.v; this.closeDD(); },
     openSelect(k, items, cur) { if (this.isOpen(k)) { this.closeDD(); return; } this.openDD(k); this.hi = Math.max(0, items.findIndex((x) => x.v === cur)); },
-    companionOptions() { return this.companions.map((c) => ({ v: c.id, label: c.name + (c.relationship ? ' (' + c.relationship + ')' : '') })); },
+    travelDate() { const l = this.legs.outbound[0]; return (l && l.date) || localToday(); },
+    companionOptions() { const d = this.travelDate(); return this.companions.map((c) => ({ v: c.id, label: companionLabel(c, d) })); },
     companionsLabel() {
       const names = this.companionOptions().filter((o) => this.companion_ids.includes(o.v)).map((o) => o.label);
       return names.length ? names.join(', ') : 'Nobody selected';
@@ -1255,21 +1262,393 @@ function statsView() {
   };
 }
 
+/* ---------------------------------------------------------------------- stays */
+
+const STAY_TYPES = ['Hotel', 'Apartment', 'Hostel', 'Guest house', 'Resort', 'Villa', 'Other'];
+const STAY_TINTS = [['#0b3a6e', '#0062e3'], ['#16314f', '#0b8a5a'], ['#3b2a63', '#8a4fd1'], ['#05203c', '#00a1de'], ['#5c0632', '#e70866'], ['#1f4d4a', '#2cb59e']];
+const SHORT_MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+function stayDateParts(iso) {
+  const d = new Date(String(iso) + 'T00:00:00Z');
+  return { d, ok: !isNaN(d.getTime()) };
+}
+function fmtStayDate(iso) {
+  const { d, ok } = stayDateParts(iso);
+  if (!ok) return '';
+  return ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getUTCDay()] + ', ' + d.getUTCDate() + ' ' + SHORT_MONTHS[d.getUTCMonth()] + ' ' + d.getUTCFullYear();
+}
+function fmtStayShort(iso) {
+  const { d, ok } = stayDateParts(iso);
+  return ok ? d.getUTCDate() + ' ' + SHORT_MONTHS[d.getUTCMonth()] : '';
+}
+function stayScoreWord(r) {
+  const n = Number(r);
+  if (!(n > 0)) return '';
+  return n >= 9 ? 'Exceptional' : n >= 8 ? 'Excellent' : n >= 7 ? 'Very good' : n >= 6 ? 'Good' : n >= 5 ? 'Fair' : 'Poor';
+}
+function stayTint(name) {
+  let h = 0;
+  for (const ch of String(name)) h = (h * 31 + ch.charCodeAt(0)) >>> 0;
+  return STAY_TINTS[h % STAY_TINTS.length];
+}
+// A small map with one pin. Leaflet objects are kept in a WeakMap, outside Alpine's reactive data.
+const PIN_MAPS = new WeakMap();
+const PIN_SVG = '<svg viewBox="0 0 30 40" width="30" height="40" aria-hidden="true"><path d="M15 39C15 39 2 24.500 2 14.500a13 13 0 0 1 26 0C28 24.500 15 39 15 39z" fill="#e70866" stroke="#fff" stroke-width="2"/><circle cx="15" cy="14.500" r="5" fill="#fff"/></svg>';
+function drawPinMap(el, lat, lon, onMove) {
+  if (typeof L === 'undefined' || !el || lat == null || lon == null) return;
+  const ll = [Number(lat), Number(lon)];
+  let m = PIN_MAPS.get(el);
+  if (!m) {
+    const map = L.map(el, { scrollWheelZoom: false }).setView(ll, 16);
+    addBaseMap(map);
+    const icon = L.divIcon({ className: 'pin-icon', html: PIN_SVG, iconSize: [30, 40], iconAnchor: [15, 38] });
+    const marker = L.marker(ll, { icon, draggable: !!onMove, keyboard: false }).addTo(map);
+    if (onMove) marker.on('dragend', () => { const q = marker.getLatLng(); onMove(Number(q.lat.toFixed(6)), Number(q.lng.toFixed(6))); });
+    m = { map, marker };
+    PIN_MAPS.set(el, m);
+    setTimeout(() => map.invalidateSize(), 60);
+  } else {
+    m.marker.setLatLng(ll);
+    m.map.setView(ll, Math.max(m.map.getZoom(), 15));
+  }
+}
+
+// Reads a chosen photo and shrinks it to a JPEG (longest side 1280px) so uploads stay small and always work.
+async function shrinkImage(file, maxDim, quality) {
+  maxDim = maxDim || 1280; quality = quality || 0.82;
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('That file could not be read as an image. Try a JPEG or PNG.'));
+      el.src = url;
+    });
+    const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
+    const w = Math.max(1, Math.round(img.naturalWidth * scale)), h = Math.max(1, Math.round(img.naturalHeight * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w; canvas.height = h;
+    const g = canvas.getContext('2d');
+    g.fillStyle = '#fff'; g.fillRect(0, 0, w, h);
+    g.drawImage(img, 0, 0, w, h);
+    let q = quality, out = canvas.toDataURL('image/jpeg', q);
+    while (out.length > 3000000 && q > 0.4) { q -= 0.12; out = canvas.toDataURL('image/jpeg', q); }
+    return out;
+  } finally { URL.revokeObjectURL(url); }
+}
+function dataUrlBytes(d) { return Math.round((String(d).length - String(d).indexOf(',') - 1) * 0.75); }
+
+function decorateStay(s) {
+  const nights = window.FLCore.stayNights(s.check_in, s.check_out);
+  const t = stayTint(s.name);
+  return {
+    ...s,
+    nights,
+    perNight: s.price != null && !s.package_id && nights > 0 ? s.price / nights : null,
+    place: [s.city, s.country].filter(Boolean).join(', '),
+    year: String(s.check_in).slice(0, 4),
+    tint: 'linear-gradient(135deg,' + t[0] + ',' + t[1] + ')',
+    scoreWord: stayScoreWord(s.rating),
+    _map: false,
+  };
+}
+
+function stayList() {
+  const sortLabels = { newest: 'Newest', oldest: 'Oldest', rated: 'Top rated', longest: 'Longest stay', price: 'Highest price' };
+  const countBy = (list, fn) => {
+    const m = new Map();
+    list.forEach((x) => { const k = fn(x); if (k) m.set(k, (m.get(k) || 0) + 1); });
+    return [...m.entries()].map(([name, n]) => ({ name, n })).sort((a, b) => b.n - a.n || a.name.localeCompare(b.name));
+  };
+  return {
+    stays: [], companions: [], loading: true, error: '', sort: 'newest',
+    yearFilter: '__all__', typeFilter: [], countryFilter: [], starFilter: [],
+    open: { year: true, stars: true, type: true, country: true },
+    async load() {
+      try {
+        const [st, co] = await Promise.all([apiJson('api/stays'), apiJson('api/companions')]);
+        this.stays = st.stays.map(decorateStay);
+        this.companions = co.companions;
+      } catch (e) { this.error = 'Could not load stays: ' + e.message; }
+      this.loading = false;
+    },
+    get filtersActive() { return this.yearFilter !== '__all__' || this.typeFilter.length || this.countryFilter.length || this.starFilter.length; },
+    resetFilters() { this.yearFilter = '__all__'; this.typeFilter = []; this.countryFilter = []; this.starFilter = []; },
+    get years() {
+      const m = countBy(this.stays, (s) => s.year);
+      return m.sort((a, b) => b.name.localeCompare(a.name));
+    },
+    get typeOptions() { return countBy(this.stays, (s) => s.stay_type); },
+    get countryOptions() { return countBy(this.stays, (s) => s.country); },
+    get starOptions() {
+      return [5, 4, 3, 2, 1].map((n) => ({ name: String(n), n: this.stays.filter((s) => Math.round(s.stars || 0) === n).length })).filter((o) => o.n);
+    },
+    get visibleStays() {
+      let out = this.stays.filter((s) => (this.yearFilter === '__all__' || s.year === this.yearFilter)
+        && (!this.typeFilter.length || this.typeFilter.includes(s.stay_type))
+        && (!this.countryFilter.length || this.countryFilter.includes(s.country))
+        && (!this.starFilter.length || this.starFilter.includes(String(Math.round(s.stars || 0)))));
+      const by = {
+        newest: (a, b) => b.check_in.localeCompare(a.check_in),
+        oldest: (a, b) => a.check_in.localeCompare(b.check_in),
+        rated: (a, b) => (b.rating == null ? -1 : b.rating) - (a.rating == null ? -1 : a.rating) || b.check_in.localeCompare(a.check_in),
+        longest: (a, b) => b.nights - a.nights || b.check_in.localeCompare(a.check_in),
+        price: (a, b) => (b.price == null ? -1 : b.price) - (a.price == null ? -1 : a.price) || b.check_in.localeCompare(a.check_in),
+      }[this.sort] || (() => 0);
+      return out.sort(by);
+    },
+    get sortLabel() { return sortLabels[this.sort] || 'Newest'; },
+    get totalNights() { return this.visibleStays.reduce((n, s) => n + s.nights, 0); },
+    get totalSpent() { return this.visibleStays.reduce((n, s) => n + (s.package_id ? 0 : Number(s.price) || 0), 0); },
+    get summaryLine() {
+      const n = this.visibleStays.length;
+      return n + (n === 1 ? ' stay' : ' stays') + ' · ' + this.totalNights + (this.totalNights === 1 ? ' night' : ' nights');
+    },
+    get newestInfo() { const s = this.visibleStays.slice().sort((a, b) => b.check_in.localeCompare(a.check_in))[0]; return s ? { value: s.city || s.name, sub: fmtStayShort(s.check_in) + ' ' + s.year } : { value: '–', sub: '' }; },
+    get ratedInfo() {
+      const s = this.visibleStays.filter((x) => x.rating != null).sort((a, b) => b.rating - a.rating)[0];
+      return s ? { value: s.rating.toFixed(1), sub: s.name } : { value: '–', sub: 'No ratings yet' };
+    },
+    get longestInfo() { const s = this.visibleStays.slice().sort((a, b) => b.nights - a.nights)[0]; return s ? { value: s.nights + (s.nights === 1 ? ' night' : ' nights'), sub: s.name } : { value: '–', sub: '' }; },
+    fmtMoney(v) { return '£' + Number(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); },
+    fmtStayDate, fmtStayShort,
+    nightsText(s) { return s.nights + (s.nights === 1 ? ' night' : ' nights'); },
+    guestsText(s) {
+      const bits = [];
+      if (s.guests) bits.push(s.guests + (s.guests === 1 ? ' guest' : ' guests'));
+      if (s.rooms) bits.push(s.rooms + (s.rooms === 1 ? ' room' : ' rooms'));
+      return bits.join(', ');
+    },
+    guestName(id, on) {
+      if (id === 'me') return 'You';
+      const c = this.companions.find((x) => x.id === id);
+      if (!c) return '';
+      const t = ageTag(c, on);
+      return t ? c.name + ' (' + t + ')' : c.name;
+    },
+    guestNames(r, s) { return (r.guests || []).map((g) => this.guestName(g, s && s.check_in)).filter(Boolean).join(', '); },
+    toggleMap(s) { s._map = !s._map; },
+    pinMapCard(el, s) { drawPinMap(el, s.lat, s.lon, null); },
+    starsArray(s) { return Array.from({ length: Math.round(s.stars || 0) }, (_, i) => i); },
+    initials(name) { return String(name).split(/\s+/).filter((w) => /^[A-Za-z0-9]/.test(w)).slice(0, 2).map((w) => w[0].toUpperCase()).join(''); },
+  };
+}
+
+function stayForm(editId) {
+  let keySeq = 0;
+  let searchSeq = 0;
+  const newRoom = (guests, type) => ({ _k: 'r' + (++keySeq), room_type: type || '', guests: guests || [] });
+  return {
+    editId, loading: !!editId, saving: false, error: '', types: STAY_TYPES, roomTypes: window.FLCore.ROOM_TYPES,
+    companions: [], pkg: null,
+    f: { name: '', stay_type: 'Hotel', city: '', country: '', address: '', lat: null, lon: null, image_url: '', check_in: '', check_out: '', stars: 0, rating: '', price: '', booking_ref: '', notes: '' },
+    rooms: [newRoom(['me'])],
+    addr: { results: [], open: false, busy: false, msg: '' },
+    photo: { mode: 'none', data: '', existing: '', busy: false, error: '', info: '' },
+    async load() {
+      try { this.companions = (await apiJson('api/companions')).companions; } catch (e) { /* the form still works without names */ }
+      if (!this.editId) return;
+      try {
+        const s = await apiJson('api/stays/' + this.editId);
+        for (const k of Object.keys(this.f)) this.f[k] = s[k] == null ? (k === 'stars' ? 0 : (k === 'lat' || k === 'lon' ? null : '')) : (typeof s[k] === 'number' && !['stars', 'lat', 'lon'].includes(k) ? String(s[k]) : s[k]);
+        if (this.f.price !== '') this.f.price = Number(this.f.price).toFixed(2);
+        this.pkg = s.package_id ? { id: s.package_id, name: s.package_name } : null;
+        if (s.image_source === 'upload') { this.photo.mode = 'upload'; this.photo.existing = s.image; }
+        else if (s.image_source === 'link') this.photo.mode = 'link';
+        const list = Array.isArray(s.room_list) && s.room_list.length ? s.room_list : [{ room_type: s.room_type, guests: ['me'] }];
+        const known = new Set(this.companions.map((c) => c.id));
+        this.rooms = list.map((r) => newRoom((r.guests || []).filter((g) => g === 'me' || known.has(g)), r.room_type || ''));
+      } catch (e) { this.error = 'Could not load this stay: ' + e.message; }
+      this.loading = false;
+    },
+    get nights() { return window.FLCore.stayNights(this.f.check_in, this.f.check_out); },
+    get nightsText() {
+      if (!this.f.check_in || !this.f.check_out) return '';
+      return this.nights > 0 ? this.nights + (this.nights === 1 ? ' night' : ' nights') : 'Check-out must be after check-in';
+    },
+    setStars(n) { this.f.stars = this.f.stars === n ? 0 : n; },
+    tidyPrice() {
+      const raw = String(this.f.price == null ? '' : this.f.price).trim();
+      const n = Number(raw.replace(/[^0-9.\-]/g, ''));
+      this.f.price = raw === '' || !Number.isFinite(n) ? '' : n.toFixed(2);
+    },
+    // Moves a too-early check-out forward when the check-in changes.
+    checkInChanged() {
+      if (this.f.check_in && (!this.f.check_out || this.f.check_out <= this.f.check_in)) {
+        const d = new Date(this.f.check_in + 'T00:00:00Z');
+        if (!isNaN(d.getTime())) { d.setUTCDate(d.getUTCDate() + 1); this.f.check_out = d.toISOString().slice(0, 10); }
+      }
+    },
+
+    /* ----- address search and map pin ----- */
+    async searchAddress() {
+      const q = String(this.f.address || '').trim();
+      const mine = ++searchSeq;
+      if (q.length < 4) { this.addr.results = []; this.addr.open = false; this.addr.msg = ''; return; }
+      this.addr.busy = true; this.addr.msg = '';
+      try {
+        const out = await apiJson('api/geocode?q=' + encodeURIComponent(q));
+        if (mine !== searchSeq) return;
+        this.addr.results = out.results || [];
+        this.addr.msg = this.addr.results.length ? '' : 'No matching addresses found. You can still save the address as typed.';
+        this.addr.open = true;
+      } catch (e) {
+        if (mine !== searchSeq) return;
+        this.addr.results = []; this.addr.msg = e.message; this.addr.open = true;
+      }
+      this.addr.busy = false;
+    },
+    pickAddress(r) {
+      this.f.address = r.address || r.label;
+      this.f.lat = r.lat; this.f.lon = r.lon;
+      if (!String(this.f.city || '').trim() && r.city) this.f.city = r.city;
+      if (!String(this.f.country || '').trim() && r.country) this.f.country = r.country;
+      if (!String(this.f.name || '').trim() && r.name) this.f.name = r.name;
+      this.addr.open = false; this.addr.results = []; this.addr.msg = '';
+      searchSeq++;
+    },
+    clearPin() { this.f.lat = null; this.f.lon = null; },
+    pinMapForm(el) { drawPinMap(el, this.f.lat, this.f.lon, (la, lo) => { this.f.lat = la; this.f.lon = lo; }); },
+    get pinText() { return this.f.lat == null ? '' : Number(this.f.lat).toFixed(5) + ', ' + Number(this.f.lon).toFixed(5); },
+
+    /* ----- photo: a link or an upload ----- */
+    setPhotoMode(m) { this.photo.mode = this.photo.mode === m ? 'none' : m; this.photo.error = ''; },
+    get photoSrc() {
+      if (this.photo.mode === 'link') { const u = String(this.f.image_url || '').trim(); return /^https?:\/\/\S+$/i.test(u) ? u : ''; }
+      if (this.photo.mode === 'upload') return this.photo.data || this.photo.existing || '';
+      return '';
+    },
+    readImage(file) { return shrinkImage(file); },
+    async pickFile(ev) {
+      const file = ev && ev.target && ev.target.files && ev.target.files[0];
+      if (!file) return;
+      this.photo.error = ''; this.photo.info = '';
+      if (!/^image\//.test(file.type || '')) { this.photo.error = 'Please choose an image file (JPEG, PNG or WebP).'; return; }
+      if (file.size > 30 * 1024 * 1024) { this.photo.error = 'That image is very large. Please choose one under 30 MB.'; return; }
+      this.photo.busy = true;
+      try {
+        this.photo.data = await this.readImage(file);
+        this.photo.info = file.name + ' \u00b7 ' + Math.max(1, Math.round(dataUrlBytes(this.photo.data) / 1024)) + ' KB after resizing';
+      } catch (e) { this.photo.error = e.message; }
+      this.photo.busy = false;
+      if (ev.target) ev.target.value = '';
+    },
+    linkBroken() { if (this.photo.mode === 'link' && this.photoSrc) this.photo.error = 'That link did not load as an image. Check it, or try Upload instead.'; },
+    linkLoaded() { if (this.photo.mode === 'link') this.photo.error = ''; },
+    removePhoto() { this.photo.mode = 'none'; this.photo.data = ''; this.photo.existing = ''; this.photo.info = ''; this.photo.error = ''; this.f.image_url = ''; },
+
+    /* ----- rooms and who is in them ----- */
+    roomTitle(i) { return 'Room ' + (i + 1); },
+    addRoom() { this.rooms.push(newRoom([])); },
+    removeRoom(i) { if (i > 0) this.rooms.splice(i, 1); },
+    guestName(id) { if (id === 'me') return 'You'; const c = this.companions.find((x) => x.id === id); return c ? c.name : ''; },
+    inRoom(room, id) { return room.guests.includes(id); },
+    // A person can only be in one room, so choosing them here takes them out of any other room.
+    toggleGuest(i, id) {
+      if (id === 'me') return;
+      const room = this.rooms[i];
+      if (room.guests.includes(id)) { room.guests = room.guests.filter((g) => g !== id); return; }
+      this.rooms.forEach((r) => { r.guests = r.guests.filter((g) => g !== id); });
+      room.guests.push(id);
+    },
+    otherRoomOf(i, id) { const j = this.rooms.findIndex((r, ix) => ix !== i && r.guests.includes(id)); return j < 0 ? '' : this.roomTitle(j); },
+    get guestTotal() { return this.rooms.reduce((n, r) => n + r.guests.length, 0); },
+    get roomsSummary() { return this.rooms.length + (this.rooms.length === 1 ? ' room' : ' rooms') + ', ' + this.guestTotal + (this.guestTotal === 1 ? ' guest' : ' guests'); },
+
+    async save() {
+      this.error = '';
+      if (!this.f.name.trim()) { this.error = 'Add the name of the place you stayed.'; return; }
+      if (!this.f.check_in || !this.f.check_out) { this.error = 'Add your check-in and check-out dates.'; return; }
+      if (this.nights < 1) { this.error = 'Check-out must be after check-in.'; return; }
+      this.saving = true;
+      try {
+        const room_list = this.rooms.map((r) => ({ room_type: r.room_type, guests: r.guests }));
+        const payload = { ...this.f, stars: this.f.stars || null, room_list, image_url: null };
+        const link = String(this.f.image_url || '').trim();
+        if (this.photo.mode === 'link' && link) {
+          if (!/^https?:\/\/\S+$/i.test(link)) { this.error = 'The image link must start with http:// or https://'; this.saving = false; return; }
+          payload.image_url = link; payload.clear_image_data = true;
+        } else if (this.photo.mode === 'upload' && (this.photo.data || this.photo.existing)) {
+          if (this.photo.data) payload.image_data = this.photo.data; // otherwise the stored photo is kept
+        } else payload.clear_image_data = true;
+        const body = JSON.stringify(payload);
+        if (this.editId) await apiJson('api/stays/' + this.editId, { method: 'PUT', headers: JSON_HEADERS, body });
+        else await apiJson('api/stays', { method: 'POST', headers: JSON_HEADERS, body });
+        location.hash = '#/stays';
+      } catch (e) { this.error = e.message; }
+      this.saving = false;
+    },
+    async remove() {
+      if (!this.editId || !confirm('Delete this stay?')) return;
+      try { await apiJson('api/stays/' + this.editId, { method: 'DELETE' }); location.hash = '#/stays'; } catch (e) { this.error = e.message; }
+    },
+  };
+}
+
 /* ----------------------------------------------------------------- companions */
+
+const AGE_GROUP_LABEL = { infant: 'Infant', child: 'Child', adult: 'Adult' };
+const todayISO = () => new Date().toISOString().slice(0, 10);
+// "Child, 8" for a companion with a date of birth, on the given day (default today). Empty without a DOB.
+function ageTag(c, onDate) {
+  if (!c || !c.date_of_birth) return '';
+  const age = window.FLCore.ageOn(c.date_of_birth, onDate || todayISO());
+  if (age === null) return '';
+  return AGE_GROUP_LABEL[window.FLCore.ageGroup(c.date_of_birth, onDate || todayISO())] + ', ' + age;
+}
+// Age group at travel; no date of birth means adult.
+function groupOn(c, onDate) { return window.FLCore.ageGroup(c && c.date_of_birth, onDate || todayISO()); }
+// "Alex (Partner · Adult, 34)" as at the travel date.
+function companionLabel(c, onDate) {
+  const bits = [c.relationship, ageTag(c, onDate)].filter(Boolean);
+  return c.name + (bits.length ? ' (' + bits.join(' \u00b7 ') + ')' : '');
+}
+// "2 adults, 1 child, 1 infant" for a party (the traveller counts as an adult).
+function partyText(companions, onDate, includeMe) {
+  const n = { adult: includeMe === false ? 0 : 1, child: 0, infant: 0 };
+  (companions || []).forEach((c) => { n[groupOn(c, onDate)]++; });
+  return [['adult', 'adult'], ['child', 'child'], ['infant', 'infant']]
+    .filter(([k]) => n[k] > 0)
+    .map(([k, w]) => n[k] + ' ' + (k === 'child' ? (n[k] === 1 ? 'child' : 'children') : w + (n[k] === 1 ? '' : 's'))).join(', ');
+}
 
 function companionsView() {
   return {
-    companions: [], loading: true, newName: '', newRelationship: '', error: '',
+    companions: [], loading: true, newName: '', newRelationship: '', newDob: '', error: '',
+    editId: null, edit: { name: '', relationship: '', dob: '' }, editError: '', today: todayISO(),
     async load() {
       try { this.companions = (await apiJson('api/companions')).companions; } catch (e) { this.error = e.message; }
       this.loading = false;
     },
+    get summaryLine() {
+      const n = this.companions.length;
+      const party = partyText(this.companions, todayISO(), false);
+      return n + (n === 1 ? ' companion' : ' companions') + (party ? ' \u00b7 ' + party : '');
+    },
+    ageText(c) { return ageTag(c); },
+    groupText(c) { return AGE_GROUP_LABEL[groupOn(c)]; },
     async add() {
       if (!this.newName.trim()) return;
-      await apiJson('api/companions', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ name: this.newName, relationship: this.newRelationship }) });
+      this.error = '';
+      try {
+        await apiJson('api/companions', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ name: this.newName, relationship: this.newRelationship, date_of_birth: this.newDob || null }) });
+      } catch (e) { this.error = e.message; return; }
       this.newName = '';
       this.newRelationship = '';
-      this.load();
+      this.newDob = '';
+      await this.load();
+    },
+    startEdit(c) { this.editId = c.id; this.edit = { name: c.name, relationship: c.relationship || '', dob: c.date_of_birth || '' }; this.editError = ''; },
+    cancelEdit() { this.editId = null; this.editError = ''; },
+    async saveEdit() {
+      if (!this.edit.name.trim()) { this.editError = 'Name is required.'; return; }
+      try {
+        const u = await apiJson('api/companions/' + this.editId, { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ name: this.edit.name, relationship: this.edit.relationship, date_of_birth: this.edit.dob || null }) });
+        const i = this.companions.findIndex((c) => c.id === this.editId);
+        if (i >= 0) this.companions.splice(i, 1, u);
+        this.companions.sort((x, y) => x.name.localeCompare(y.name));
+        this.editId = null; this.editError = '';
+      } catch (e) { this.editError = e.message; }
     },
     async del(id) {
       if (!confirm('Remove this companion? They will also be removed from any flights they are on.')) return;
@@ -1364,18 +1743,363 @@ function settingsView() {
       const file = ev.target.files && ev.target.files[0];
       ev.target.value = '';
       if (!file) return;
-      if (this.replaceOnImport && !confirm('Replace ALL existing flights and companions with the contents of this file?')) return;
+      if (this.replaceOnImport && !confirm('Replace your existing data with the contents of this file? Only the kinds of data in the file are replaced (flights, stays and/or packages).')) return;
       try {
         const text = await file.text();
         JSON.parse(text);
         const out = await apiJson('api/import' + (this.replaceOnImport ? '?mode=replace' : ''), { method: 'POST', headers: JSON_HEADERS, body: text });
         this.backupOk = out.skipped.length === 0;
-        this.backupMsg = 'Imported ' + out.imported + ' flight(s).' + (out.skipped.length ? ' Skipped ' + out.skipped.length + ': ' + out.skipped.slice(0, 3).join('; ') : '');
+        const parts = [[out.imported, 'flight'], [out.imported_stays, 'stay'], [out.imported_packages, 'package']].filter((x) => x[0]).map((x) => x[0] + ' ' + x[1] + (x[0] === 1 ? '' : 's'));
+        this.backupMsg = 'Imported ' + (parts.length ? parts.join(', ') : 'nothing new') + '.' + (out.skipped.length ? ' Skipped ' + out.skipped.length + ': ' + out.skipped.slice(0, 3).join('; ') : '');
         this.load();
       } catch (e) {
         this.backupOk = false;
         this.backupMsg = 'Import failed: ' + e.message;
       }
+    },
+  };
+}
+
+
+/* ----------------------------------------------------------------- packages */
+
+const gbp = (v) => '£' + Number(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const TRANSFER_KIND_LABELS = { arrival: 'Airport to hotel', departure: 'Hotel to airport', other: 'Other transfer' };
+
+function decoratePackage(p) {
+  const t = stayTint(p.name);
+  return {
+    ...p,
+    year: p.start ? p.start.slice(0, 4) : '',
+    tint: 'linear-gradient(135deg,' + t[0] + ',' + t[1] + ')',
+    perPerson: p.price != null && p.travellers ? p.price / p.travellers : null,
+    hotel: (p.stays || [])[0] || null,
+    flightCount: (p.trips || []).reduce((n, tr) => n + tr.legs.length, 0),
+    _open: false,
+  };
+}
+
+function packageList() {
+  const sortLabels = { newest: 'Newest', oldest: 'Oldest', longest: 'Longest holiday', price: 'Highest price' };
+  const countBy = (list, fn) => {
+    const m = new Map();
+    list.forEach((x) => { const k = fn(x); if (k) m.set(k, (m.get(k) || 0) + 1); });
+    return [...m.entries()].map(([name, n]) => ({ name, n })).sort((a, b) => b.n - a.n || a.name.localeCompare(b.name));
+  };
+  const core = window.FLCore;
+  return {
+    packages: [], loading: true, error: '', sort: 'newest',
+    yearFilter: '__all__', boardFilter: [], countryFilter: [], providerFilter: [],
+    open: { year: true, board: true, country: true, provider: true },
+    async load() {
+      try { this.packages = (await apiJson('api/packages')).packages.map(decoratePackage); }
+      catch (e) { this.error = 'Could not load packages: ' + e.message; }
+      this.loading = false;
+    },
+    get filtersActive() { return this.yearFilter !== '__all__' || this.boardFilter.length || this.countryFilter.length || this.providerFilter.length; },
+    resetFilters() { this.yearFilter = '__all__'; this.boardFilter = []; this.countryFilter = []; this.providerFilter = []; },
+    get years() { return countBy(this.packages, (p) => p.year).sort((a, b) => b.name.localeCompare(a.name)); },
+    get boardOptions() { return countBy(this.packages, (p) => p.board); },
+    get countryOptions() { return countBy(this.packages, (p) => p.country || (p.hotel && p.hotel.country)); },
+    get providerOptions() { return countBy(this.packages, (p) => p.provider); },
+    get visiblePackages() {
+      const out = this.packages.filter((p) => (this.yearFilter === '__all__' || p.year === this.yearFilter)
+        && (!this.boardFilter.length || this.boardFilter.includes(p.board))
+        && (!this.countryFilter.length || this.countryFilter.includes(p.country || (p.hotel && p.hotel.country)))
+        && (!this.providerFilter.length || this.providerFilter.includes(p.provider)));
+      const by = {
+        newest: (a, b) => String(b.start).localeCompare(String(a.start)),
+        oldest: (a, b) => String(a.start).localeCompare(String(b.start)),
+        longest: (a, b) => b.nights - a.nights || String(b.start).localeCompare(String(a.start)),
+        price: (a, b) => (b.price == null ? -1 : b.price) - (a.price == null ? -1 : a.price) || String(b.start).localeCompare(String(a.start)),
+      }[this.sort] || (() => 0);
+      return out.sort(by);
+    },
+    get sortLabel() { return sortLabels[this.sort] || 'Newest'; },
+    get totalNights() { return this.visiblePackages.reduce((n, p) => n + p.nights, 0); },
+    get totalSpent() { return this.visiblePackages.reduce((n, p) => n + (Number(p.price) || 0), 0); },
+    get summaryLine() {
+      const n = this.visiblePackages.length;
+      return n + (n === 1 ? ' package' : ' packages') + ' · ' + this.totalNights + (this.totalNights === 1 ? ' night' : ' nights');
+    },
+    get newestInfo() { const p = this.visiblePackages.slice().sort((a, b) => String(b.start).localeCompare(String(a.start)))[0]; return p ? { value: p.destination || p.name, sub: fmtStayShort(p.start) + ' ' + p.year } : { value: '–', sub: '' }; },
+    get longestInfo() { const p = this.visiblePackages.slice().sort((a, b) => b.nights - a.nights)[0]; return p ? { value: p.nights + (p.nights === 1 ? ' night' : ' nights'), sub: p.name } : { value: '–', sub: '' }; },
+    get priciestInfo() { const p = this.visiblePackages.filter((x) => x.price != null).sort((a, b) => b.price - a.price)[0]; return p ? { value: gbp(p.price), sub: p.name } : { value: '–', sub: 'No prices yet' }; },
+    fmtMoney: gbp, fmtStayDate, fmtStayShort,
+    // works for a package (has nights) and for a stay inside one (nights come from its dates)
+    nightsText(x) { const n = x.nights != null ? x.nights : core.stayNights(x.check_in, x.check_out); return n + (n === 1 ? ' night' : ' nights'); },
+    starsArray(s) { return Array.from({ length: Math.round((s && s.stars) || 0) }, (_, i) => i); },
+    initials(name) { return String(name).split(/\s+/).filter((w) => /^[A-Za-z0-9]/.test(w)).slice(0, 2).map((w) => w[0].toUpperCase()).join(''); },
+    tripRoute(t) { return core.airportName(t.from) + (t.type === 'return' ? ' ⇄ ' : ' → ') + core.airportName(t.to); },
+    tripSub(t) {
+      const airlines = [...new Set(t.legs.map((l) => l.airline).filter(Boolean))].join(', ');
+      return (t.type === 'return' ? 'Return' : 'One-way') + ' · ' + t.legs.length + (t.legs.length === 1 ? ' flight' : ' flights') + (airlines ? ' · ' + airlines : '');
+    },
+    legLine(l) {
+      const times = [l.departure_time, l.arrival_time].every(Boolean) ? ' ' + l.departure_time + ' → ' + l.arrival_time : '';
+      return fmtStayShort(l.date) + ' · ' + l.airline + (l.flight_number ? ' ' + l.flight_number : '') + ' · ' + l.from_airport.iata + ' → ' + l.to_airport.iata + times;
+    },
+    transferText(p) {
+      const n = p.transfers.length;
+      if (!n) return '';
+      const modes = [...new Set(p.transfers.map((t) => t.mode).filter(Boolean))].join(', ');
+      return n + (n === 1 ? ' transfer' : ' transfers') + (modes ? ' · ' + modes : '');
+    },
+    transferLine(t) {
+      const when = [t.date ? fmtStayShort(t.date) : '', t.time || ''].filter(Boolean).join(' ');
+      return [TRANSFER_KIND_LABELS[t.kind] || 'Transfer', t.mode, when].filter(Boolean).join(' · ');
+    },
+    transferRoute(t) { return [t.from_place, t.to_place].filter(Boolean).join(' → '); },
+    guestsText(s) { return s.rooms + (s.rooms === 1 ? ' room' : ' rooms'); },
+  };
+}
+
+function packageForm(editId, tripKey) {
+  const core = window.FLCore;
+  let seq = 0;
+  const dayAfter = (iso) => { const d = new Date(iso + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() + 1); return d.toISOString().slice(0, 10); };
+  return {
+    editId, loading: true, saving: false, error: '', hint: '',
+    boards: core.PACKAGE_BOARDS, modes: core.TRANSFER_MODES,
+    f: { name: '', provider: '', destination: '', country: '', board: '', travellers: '', price: '', booking_ref: '', notes: '' },
+    trips: [], stays: [], pickedTrips: [], pickedStays: [], transfers: [],
+    async load() {
+      try {
+        const [fr, st] = await Promise.all([apiJson('api/flights'), apiJson('api/stays')]);
+        const groups = new Map();
+        for (const f of fr.flights) { const k = f.trip_id || f.id; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(f); }
+        this.trips = [...groups.entries()].map(([key, legs]) => {
+          legs.sort((a, b) => (a.direction === 'return') - (b.direction === 'return') || (a.leg_order || 0) - (b.leg_order || 0) || a.date.localeCompare(b.date));
+          const out = legs.filter((l) => l.direction !== 'return'), back = legs.filter((l) => l.direction === 'return');
+          const first = out[0] || legs[0], last = out[out.length - 1] || first;
+          const dates = legs.map((l) => l.date).sort();
+          return { key, legs, type: back.length ? 'return' : 'oneway', from: first.from_airport, to: last.to_airport, start: dates[0], end: dates[dates.length - 1], package_id: (legs.find((l) => l.package_id) || {}).package_id || null, package_name: (legs.find((l) => l.package_id) || {}).package_name || null, companions: first.companions || [] };
+        }).sort((a, b) => b.start.localeCompare(a.start));
+        this.stays = st.stays.map((s) => ({ ...s, nights: core.stayNights(s.check_in, s.check_out), place: [s.city, s.country].filter(Boolean).join(', ') }));
+        if (this.editId) {
+          const p = await apiJson('api/packages/' + encodeURIComponent(this.editId));
+          for (const k of Object.keys(this.f)) this.f[k] = p[k] == null ? '' : String(p[k]);
+          if (this.f.price !== '') this.f.price = Number(this.f.price).toFixed(2);
+          this.pickedTrips = [...p.trip_keys];
+          this.pickedStays = [...p.stay_ids];
+          this.transfers = p.transfers.map((t) => this.newTransfer(t));
+        } else if (tripKey) {
+          this.startFromTrip(tripKey);
+        }
+      } catch (e) { this.error = 'Could not load this page: ' + e.message; }
+      this.loading = false;
+    },
+    // "Convert to package": starts from a trip, fills in what it already knows and ticks the stays that fit its dates.
+    startFromTrip(key) {
+      const t = this.trips.find((x) => x.key === key);
+      if (!t) { this.error = 'That trip could not be found. It may have been deleted.'; return; }
+      if (t.package_id) { this.error = 'That trip is already part of the package “' + (t.package_name || 'another package') + '”.'; return; }
+      this.pickedTrips = [key];
+      const dest = core.airportName(t.to);
+      this.f.name = dest + ' holiday';
+      this.f.destination = dest;
+      this.f.country = t.to.country || '';
+      this.f.travellers = String(1 + (t.companions || []).length);
+      const fits = this.stays.filter((s) => !s.package_id && s.check_in >= t.start && s.check_out <= dayAfter(t.end));
+      this.pickedStays = fits.map((s) => s.id);
+      if (fits.length) this.hint = 'We ticked ' + (fits.length === 1 ? 'a stay' : fits.length + ' stays') + ' that fall within the dates of this trip. Untick anything that does not belong.';
+    },
+    get freeTrips() { return this.trips.filter((t) => !t.package_id || t.package_id === this.editId); },
+    get freeStays() { return this.stays.filter((s) => !s.package_id || s.package_id === this.editId).sort((a, b) => b.check_in.localeCompare(a.check_in)); },
+    get busyTrips() { return this.trips.filter((t) => t.package_id && t.package_id !== this.editId).length; },
+    get busyStays() { return this.stays.filter((s) => s.package_id && s.package_id !== this.editId).length; },
+    isTrip(k) { return this.pickedTrips.includes(k); },
+    isStay(k) { return this.pickedStays.includes(k); },
+    toggleTrip(k) { this.pickedTrips = this.isTrip(k) ? this.pickedTrips.filter((x) => x !== k) : [...this.pickedTrips, k]; },
+    toggleStay(k) { this.pickedStays = this.isStay(k) ? this.pickedStays.filter((x) => x !== k) : [...this.pickedStays, k]; },
+    tripRoute(t) { return core.airportName(t.from) + (t.type === 'return' ? ' ⇄ ' : ' → ') + core.airportName(t.to); },
+    tripSub(t) {
+      const airlines = [...new Set(t.legs.map((l) => l.airline).filter(Boolean))].join(', ');
+      return [fmtStayShort(t.start) + (t.end !== t.start ? ' – ' + fmtStayShort(t.end) : '') + ' ' + t.start.slice(0, 4), (t.type === 'return' ? 'Return' : 'One-way'), t.legs.length + (t.legs.length === 1 ? ' flight' : ' flights'), airlines].filter(Boolean).join(' · ');
+    },
+    staySub(s) { return [fmtStayShort(s.check_in) + ' – ' + fmtStayShort(s.check_out) + ' ' + s.check_out.slice(0, 4), s.nights + (s.nights === 1 ? ' night' : ' nights'), s.place].filter(Boolean).join(' · '); },
+
+    /* ----- transfers ----- */
+    newTransfer(base) {
+      const b = base || {};
+      return { _k: 't' + (++seq), kind: b.kind || 'arrival', mode: b.mode || 'Shared shuttle', date: b.date || '', time: b.time || '', from_place: b.from_place || '', to_place: b.to_place || '', notes: b.notes || '' };
+    },
+    transferTitle(t, i) { return 'Transfer ' + (i + 1) + ' · ' + (TRANSFER_KIND_LABELS[t.kind] || 'Transfer'); },
+    addTransfer() {
+      const has = (k) => this.transfers.some((t) => t.kind === k);
+      const kind = !has('arrival') ? 'arrival' : !has('departure') ? 'departure' : 'other';
+      const t = this.newTransfer({ kind });
+      const trip = this.trips.find((x) => this.isTrip(x.key));
+      const stay = this.stays.find((x) => this.isStay(x.id));
+      const airport = trip ? core.airportName(trip.to) + ' Airport' : '';
+      const hotel = stay ? stay.name : '';
+      if (kind === 'arrival') { t.from_place = airport; t.to_place = hotel; t.date = stay ? stay.check_in : (trip ? trip.start : ''); }
+      if (kind === 'departure') { t.from_place = hotel; t.to_place = airport; t.date = stay ? stay.check_out : (trip ? trip.end : ''); }
+      this.transfers.push(t);
+    },
+    removeTransfer(i) { this.transfers.splice(i, 1); },
+    tidyPrice() {
+      const raw = String(this.f.price == null ? '' : this.f.price).trim();
+      const n = Number(raw.replace(/[^0-9.\-]/g, ''));
+      this.f.price = raw === '' || !Number.isFinite(n) ? '' : n.toFixed(2);
+    },
+    async save() {
+      this.error = '';
+      if (!this.f.name.trim()) { this.error = 'Give the package a name.'; return; }
+      if (!this.pickedTrips.length && !this.pickedStays.length) { this.error = 'Pick at least one trip or stay to put in this package. Log them first if they are not in the lists.'; return; }
+      for (let i = 0; i < this.transfers.length; i++) {
+        const t = this.transfers[i];
+        if (!String(t.from_place).trim() && !String(t.to_place).trim()) { this.error = 'Transfer ' + (i + 1) + ': add where it picks you up or drops you off.'; return; }
+      }
+      this.saving = true;
+      try {
+        const payload = {
+          ...this.f, trip_keys: this.pickedTrips, stay_ids: this.pickedStays,
+          transfers: this.transfers.map(({ _k, ...t }) => t),
+        };
+        await apiJson(this.editId ? 'api/packages/' + encodeURIComponent(this.editId) : 'api/packages', {
+          method: this.editId ? 'PUT' : 'POST', headers: JSON_HEADERS, body: JSON.stringify(payload),
+        });
+      } catch (e) {
+        this.error = e.message || 'Could not save.';
+        this.saving = false;
+        return;
+      }
+      this.saving = false;
+      location.hash = '#/packages';
+    },
+    async del() {
+      if (!confirm('Delete this package? The flights and stays in it stay in your log and get their own prices back.')) return;
+      try { await apiJson('api/packages/' + encodeURIComponent(this.editId), { method: 'DELETE' }); }
+      catch (e) { this.error = e.message; return; }
+      location.hash = '#/packages';
+    },
+  };
+}
+
+
+/* ------------------------------------------------------- stay & package details */
+
+const hasText = (r) => r[1] != null && String(r[1]).trim() !== '';
+
+function stayDetail(id) {
+  return {
+    id, s: null, companions: [], loading: true, error: '', busy: false,
+    async load() {
+      try {
+        const [st, co] = await Promise.all([apiJson('api/stays/' + encodeURIComponent(this.id)), apiJson('api/companions')]);
+        this.companions = co.companions;
+        this.s = decorateStay(st);
+      } catch (e) { this.error = /not found/i.test(e.message) ? 'That stay could not be found. It may have been deleted.' : 'Could not load this stay: ' + e.message; }
+      this.loading = false;
+    },
+    get subtitle() { const s = this.s; return [s.place, fmtStayShort(s.check_in) + ' – ' + fmtStayShort(s.check_out) + ' ' + s.check_out.slice(0, 4)].filter(Boolean).join(' · '); },
+    get nightsLabel() { return this.s.nights + (this.s.nights === 1 ? ' night' : ' nights'); },
+    get stayFacts() {
+      const s = this.s;
+      return [
+        ['Type', s.stay_type],
+        ['Hotel class', s.stars ? s.stars + (s.stars === 1 ? ' star' : ' stars') : ''],
+        ['Your rating', s.rating != null ? s.rating.toFixed(1) + ' / 10' + (s.scoreWord ? ' · ' + s.scoreWord : '') : ''],
+        ['Location', s.place],
+        ['Address', s.address],
+      ].filter(hasText);
+    },
+    get dateFacts() {
+      const s = this.s;
+      return [['Check-in', fmtStayDate(s.check_in)], ['Check-out', fmtStayDate(s.check_out)], ['Length of stay', this.nightsLabel]];
+    },
+    get costFacts() {
+      const s = this.s;
+      return [
+        ['Total cost', s.package_id ? 'Part of a package' : (s.price != null ? gbp(s.price) : '')],
+        ['Per night', s.perNight != null ? gbp(s.perNight) : ''],
+        ['Booking reference', s.booking_ref],
+      ].filter(hasText);
+    },
+    guestName(gid) {
+      if (gid === 'me') return 'You';
+      const c = this.companions.find((x) => x.id === gid);
+      if (!c) return '';
+      const t = ageTag(c, this.s && this.s.check_in);
+      return t ? c.name + ' (' + t + ')' : c.name;
+    },
+    roomGuests(r) { return (r.guests || []).map((g) => this.guestName(g)).filter(Boolean).join(', ') || '—'; },
+    starsArray(s) { return Array.from({ length: Math.round(s.stars || 0) }, (_, i) => i); },
+    initials(name) { return String(name).split(/\s+/).filter((w) => /^[A-Za-z0-9]/.test(w)).slice(0, 2).map((w) => w[0].toUpperCase()).join(''); },
+    pinMap(el) { drawPinMap(el, this.s.lat, this.s.lon, null); },
+    async del() {
+      const extra = this.s.package_id ? ' It is part of the package “' + this.s.package_name + '”, which keeps its other flights, stays and transfers.' : '';
+      if (!confirm('Remove this stay from your log?' + extra)) return;
+      this.busy = true;
+      try { await apiJson('api/stays/' + encodeURIComponent(this.id), { method: 'DELETE' }); } catch (e) { this.error = e.message; this.busy = false; return; }
+      location.hash = '#/stays';
+    },
+  };
+}
+
+function packageDetail(id) {
+  const core = window.FLCore;
+  return {
+    id, p: null, companions: [], unit: 'km', loading: true, error: '', busy: false,
+    async load() {
+      try {
+        const [pk, settings, co] = await Promise.all([apiJson('api/packages/' + encodeURIComponent(this.id)), apiJson('api/account/settings'), apiJson('api/companions').catch(() => ({ companions: [] }))]);
+        this.companions = co.companions || [];
+        this.unit = settings.distance_unit || 'km';
+        this.p = decoratePackage(pk);
+      } catch (e) { this.error = /not found/i.test(e.message) ? 'That package could not be found. It may have been deleted.' : 'Could not load this package: ' + e.message; }
+      this.loading = false;
+    },
+    get subtitle() { const p = this.p; return [p.place, p.start ? fmtStayShort(p.start) + ' – ' + fmtStayShort(p.end) + ' ' + p.end.slice(0, 4) : ''].filter(Boolean).join(' · '); },
+    get nightsLabel() { return this.p.nights + (this.p.nights === 1 ? ' night' : ' nights'); },
+    // Everyone on the package's flights and stay rooms, grouped by age on the first day of the holiday.
+    get partyLabel() {
+      const p = this.p, day = p.start || todayISO(), ids = new Set();
+      (p.trips || []).forEach((tr) => tr.legs.forEach((l) => (l.companions || []).forEach((c) => ids.add(c.id))));
+      (p.stays || []).forEach((st) => (st.room_list || []).forEach((r) => (r.guests || []).forEach((g) => { if (g !== 'me') ids.add(g); })));
+      const people = [...ids].map((id) => this.companions.find((c) => c.id === id)).filter(Boolean);
+      return people.length ? partyText(people, day, true) : '';
+    },
+    get packageFacts() {
+      const p = this.p;
+      return [
+        ['Holiday company', p.provider], ['Board basis', p.board], ['Destination', p.place],
+        ['Travellers', p.travellers ? String(p.travellers) : ''], ['Travelling party', this.partyLabel], ['Booking reference', p.booking_ref],
+      ].filter(hasText);
+    },
+    get dateFacts() {
+      const p = this.p;
+      return [['Departs', p.start ? fmtStayDate(p.start) : ''], ['Returns', p.end ? fmtStayDate(p.end) : ''], ['Length', p.nights ? this.nightsLabel : '']].filter(hasText);
+    },
+    get costFacts() {
+      const p = this.p;
+      return [['Total price', p.price != null ? gbp(p.price) : 'Not recorded'], ['Per person', p.perPerson != null ? gbp(p.perPerson) : '']].filter(hasText);
+    },
+    get includedFacts() {
+      const p = this.p;
+      const n = (k, one, many) => k + ' ' + (k === 1 ? one : many);
+      return [
+        ['Flights', p.flightCount ? n(p.flightCount, 'flight', 'flights') + ' in ' + n(p.trips.length, 'trip', 'trips') : ''],
+        ['Stays', p.stays.length ? n(p.stays.length, 'stay', 'stays') : ''],
+        ['Transfers', p.transfers.length ? n(p.transfers.length, 'transfer', 'transfers') : ''],
+      ].filter(hasText);
+    },
+    fmtStayDate, fmtStayShort,
+    tripRoute(t) { return core.airportName(t.from) + (t.type === 'return' ? ' ⇄ ' : ' → ') + core.airportName(t.to); },
+    legTitle(l) { return l.airline + (l.flight_number ? ' ' + l.flight_number : '') + (l.aircraft_type ? ' · ' + l.aircraft_type : ''); },
+    fmtDist(km) { if (!km) return ''; const v = this.unit === 'mi' ? km * 0.621371 : km; return Math.round(v).toLocaleString() + ' ' + this.unit; },
+    nightsOf(s) { const n = core.stayNights(s.check_in, s.check_out); return n + (n === 1 ? ' night' : ' nights'); },
+    transferTitle(t) { return [TRANSFER_KIND_LABELS[t.kind] || 'Transfer', t.mode].filter(Boolean).join(' · '); },
+    transferWhen(t) { return [t.date ? fmtStayDate(t.date) : '', t.time || ''].filter(Boolean).join(' at '); },
+    initials(name) { return String(name).split(/\s+/).filter((w) => /^[A-Za-z0-9]/.test(w)).slice(0, 2).map((w) => w[0].toUpperCase()).join(''); },
+    get pinStay() { return (this.p.stays || []).find((x) => x.lat != null) || null; },
+    pinMap(el) { const s = this.pinStay; if (s) drawPinMap(el, s.lat, s.lon, null); },
+    async del() {
+      if (!confirm('Delete this package? The flights and stays in it stay in your log and get their own prices back.')) return;
+      this.busy = true;
+      try { await apiJson('api/packages/' + encodeURIComponent(this.id), { method: 'DELETE' }); } catch (e) { this.error = e.message; this.busy = false; return; }
+      location.hash = '#/packages';
     },
   };
 }

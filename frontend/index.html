@@ -35,17 +35,25 @@
           <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M21 16v-2l-8-5V3.500a1.500 1.500 0 0 0-3 0V9l-8 5v2l8-2.500V19l-2 1.500V22l3.500-1 3.500 1v-1.500L13 19v-5.500z"/></svg>
           Flights
         </a>
+        <a class="pill" :class="{active: route==='stays' || route==='stay' || route==='stay-add'}" href="#/stays">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 20V6M3 14h18v6M21 14v-2a3 3 0 0 0-3-3h-7v5"/><circle cx="7" cy="10.500" r="1.800"/></svg>
+          Stays
+        </a>
+        <a class="pill" :class="{active: route==='packages' || route==='package' || route==='package-add'}" href="#/packages">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="8" width="18" height="12" rx="2"/><path d="M9 8V6a3 3 0 0 1 6 0v2M3 13h18"/></svg>
+          Packages
+        </a>
         <a class="pill" :class="{active: route==='map'}" href="#/map">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s7-7.500 7-12a7 7 0 1 0-14 0c0 4.500 7 12 7 12Z"/><circle cx="12" cy="10" r="2.500"/></svg>
-          Route map
+          Route Map
+        </a>
+        <a class="pill" :class="{active: route==='companions'}" href="#/companions">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.300 2.700-6 6-6s6 2.700 6 6"/><circle cx="17" cy="9" r="2.300"/><path d="M15.500 14.200c2.600.5 4.500 2.600 4.500 5.300"/></svg>
+          Travel Companions
         </a>
         <a class="pill" :class="{active: route==='stats'}" href="#/stats">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M5 20V10M12 20V4M19 20v-7"/></svg>
           Statistics
-        </a>
-        <a class="pill" :class="{active: route==='companions'}" href="#/companions">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.300 2.700-6 6-6s6 2.700 6 6"/><circle cx="17" cy="9" r="2.300"/><path d="M15.500 14.200c2.600.5 4.500 2.600 4.500 5.300"/></svg>
-          Companions
         </a>
       </nav>
     </div>
@@ -272,8 +280,9 @@
                       </div>
                       <aside class="fc-side">
                         <div class="fc-side-body">
-                          <span class="fc-side-label">Total cost</span>
-                          <span class="fc-price" :class="{none: !itemPrice(item)}" x-text="itemPrice(item) ? fmtMoney(itemPrice(item)) : 'Not recorded'"></span>
+                          <span class="fc-side-label" x-text="item.package_id ? 'Booked as' : 'Total cost'"></span>
+                          <span class="fc-price" :class="{none: !item.package_id && !itemPrice(item), pkg: item.package_id}" x-text="item.package_id ? 'Part of a package' : (itemPrice(item) ? fmtMoney(itemPrice(item)) : 'Not recorded')"></span>
+                          <a class="fc-side-sub pkg-link" x-show="item.package_id" href="#/packages" x-text="item.package_name"></a>
                         </div>
                         <span class="fc-side-sub fc-side-kind" x-text="sideSummary(item)"></span>
                         <a class="btn btn-navy btn-block" :href="item.kind === 'flight' ? '#/flight?id=' + item.key : '#/trip?id=' + item.key">Show details &rarr;</a>
@@ -421,6 +430,8 @@
                   <div class="form-hint" x-text="subtitle"></div>
                 </div>
                 <div class="detail-actions">
+                  <a class="btn" href="#/packages" x-show="item.package_id" x-text="'Part of ' + (item.package_name || 'a package')"></a>
+                  <a class="btn" x-show="!item.package_id" :href="'#/package-add?trip=' + item.key">Convert to package</a>
                   <a class="btn btn-navy" :href="'#/add?id=' + item.key">Edit trip</a>
                   <button type="button" class="btn btn-danger" @click="del()">Delete trip</button>
                 </div>
@@ -942,9 +953,28 @@
               </div>
             </div>
 
+            <template x-if="editId">
+              <div class="form-card pkg-convert">
+                <h3 class="settings-section-title">Package holiday</h3>
+                <template x-if="!pkg">
+                  <div class="pkg-convert-body">
+                    <p class="form-hint">Booked these flights as part of a package with a hotel and transfers? Convert the trip into a package. The flights stay on this page, but show &ldquo;Part of a package&rdquo; instead of a price.</p>
+                    <a class="btn" :href="'#/package-add?trip=' + encodeURIComponent(editId)">Convert this trip into a package</a>
+                  </div>
+                </template>
+                <template x-if="pkg">
+                  <div class="pkg-convert-body">
+                    <p class="form-hint">This trip is part of the package <b x-text="pkg.name"></b>, so its price is covered by the package.</p>
+                    <a class="btn" :href="'#/package-add?id=' + encodeURIComponent(pkg.id)">Edit the package</a>
+                  </div>
+                </template>
+              </div>
+            </template>
+
             <div class="form-card">
               <h3 class="settings-section-title">Price</h3>
-              <div class="form-grid" style="grid-template-columns: repeat(3, 1fr);">
+              <p class="form-hint" x-show="pkg">Part of a package &mdash; the cost is on the package, so there is no separate price for these flights.</p>
+              <div class="form-grid" style="grid-template-columns: repeat(3, 1fr);" x-show="!pkg">
                 <div class="form-field ff-price"><label>Total Cost of Flights</label><span class="ff-money"><span class="ff-cur">&pound;</span><input x-model="price" inputmode="decimal" placeholder="0.00" autocomplete="off" @change="tidyPrice()"></span></div>
               </div>
               <template x-if="error"><div class="form-error" style="margin-top:14px;" x-text="error"></div></template>
@@ -957,27 +987,833 @@
         </div>
       </template>
 
-      <!-- ============================ TRAVEL COMPANIONS ============================ -->
-      <template x-if="route==='companions'">
-        <div x-data="companionsView()" x-init="load()">
-          <div class="page-header">
-            <h1 class="page-title"><span class="eyebrow">Address Book</span>Travel Companions</h1>
-          </div>
-          <div class="form-card">
-            <h3 class="settings-section-title">Add a Companion</h3>
-            <form @submit.prevent="add()" class="form-grid">
-              <div class="form-field"><label>Name</label><input x-model="newName" required></div>
-              <div class="form-field"><label>Relationship</label><input x-model="newRelationship" placeholder="e.g. Spouse, Friend"></div>
-              <div class="form-field" style="align-self:end;"><button class="btn btn-primary" type="submit">Add</button></div>
-            </form>
-          </div>
-          <template x-if="!loading && companions.length === 0"><div class="empty-state">No travel companions yet.</div></template>
-          <template x-for="c in companions" :key="c.id">
-            <div class="form-card" style="display:flex; align-items:center; justify-content:space-between;">
-              <div><strong x-text="c.name"></strong> <span class="form-hint" x-text="c.relationship ? '(' + c.relationship + ')' : ''"></span></div>
-              <button type="button" class="btn" @click="del(c.id)">Remove</button>
+      <!-- =================================== STAYS =================================== -->
+      <template x-if="route==='stays'">
+        <div class="layout" x-data="stayList()" x-init="load()">
+          <aside class="filters">
+            <a href="#/stay-add" class="btn btn-grey btn-block">+ Log a stay</a>
+
+            <div class="filter-group" x-show="stays.length">
+              <button type="button" class="filter-head" @click="open.year = !open.year">
+                <span>Year</span>
+                <svg :class="{flip: !open.year}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.500" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>
+              </button>
+              <div class="filter-body" x-show="open.year">
+                <label class="check"><input type="radio" value="__all__" x-model="yearFilter"><span class="check-text">All years</span><span class="check-count" x-text="stays.length"></span></label>
+                <template x-for="y in years" :key="y.name">
+                  <label class="check"><input type="radio" :value="y.name" x-model="yearFilter"><span class="check-text" x-text="y.name"></span><span class="check-count" x-text="y.n"></span></label>
+                </template>
+              </div>
+            </div>
+
+            <div class="filter-group" x-show="starOptions.length">
+              <button type="button" class="filter-head" @click="open.stars = !open.stars">
+                <span>Star rating</span>
+                <svg :class="{flip: !open.stars}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.500" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>
+              </button>
+              <div class="filter-body" x-show="open.stars">
+                <template x-for="o in starOptions" :key="o.name">
+                  <label class="check"><input type="checkbox" :value="o.name" x-model="starFilter"><span class="check-text"><span class="stay-stars" :aria-label="o.name + ' stars'"><template x-for="i in Number(o.name)" :key="i"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.500l2.900 6 6.600.9-4.800 4.600 1.200 6.500L12 17.300 6.100 20.500l1.200-6.500L2.500 9.400l6.600-.9z"/></svg></template></span></span><span class="check-count" x-text="o.n"></span></label>
+                </template>
+              </div>
+            </div>
+
+            <div class="filter-group" x-show="stays.length">
+              <button type="button" class="filter-head" @click="open.type = !open.type">
+                <span>Type of stay</span>
+                <svg :class="{flip: !open.type}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.500" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>
+              </button>
+              <div class="filter-body" x-show="open.type">
+                <template x-for="o in typeOptions" :key="o.name">
+                  <label class="check"><input type="checkbox" :value="o.name" x-model="typeFilter"><span class="check-text" x-text="o.name"></span><span class="check-count" x-text="o.n"></span></label>
+                </template>
+              </div>
+            </div>
+
+            <div class="filter-group" x-show="countryOptions.length">
+              <button type="button" class="filter-head" @click="open.country = !open.country">
+                <span>Country</span>
+                <svg :class="{flip: !open.country}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.500" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>
+              </button>
+              <div class="filter-body" x-show="open.country">
+                <template x-for="o in countryOptions" :key="o.name">
+                  <label class="check"><input type="checkbox" :value="o.name" x-model="countryFilter"><span class="check-text" x-text="o.name"></span><span class="check-count" x-text="o.n"></span></label>
+                </template>
+              </div>
+            </div>
+          </aside>
+
+          <section class="results">
+            <h1 class="h1">Your stays</h1>
+            <p class="sub">Hotels, apartments and other places you have stayed on your travels.</p>
+
+            <template x-if="error"><p class="form-error" x-text="error"></p></template>
+            <template x-if="loading && !error"><p class="form-hint">Loading&hellip;</p></template>
+            <template x-if="!loading && !error && stays.length === 0">
+              <div class="empty-state">No stays logged yet. <a href="#/stay-add">Log your first stay</a>.</div>
+            </template>
+
+            <template x-if="!loading && stays.length > 0">
+              <div>
+                <div class="results-line">
+                  <span><span x-text="summaryLine"></span><span x-show="totalSpent > 0"> &middot; <span x-text="fmtMoney(totalSpent)"></span> spent</span> &middot; sorted by <b x-text="sortLabel"></b></span>
+                  <button type="button" class="link-btn" x-show="filtersActive" @click="resetFilters()">Reset filters</button>
+                </div>
+
+                <div class="tabs">
+                  <button type="button" class="tab" :class="{active: sort==='newest'}" @click="sort='newest'">
+                    <span class="tab-t">Newest</span>
+                    <span class="tab-v" x-text="newestInfo.value"></span>
+                    <span class="tab-s" x-text="newestInfo.sub"></span>
+                  </button>
+                  <button type="button" class="tab" :class="{active: sort==='rated'}" @click="sort='rated'">
+                    <span class="tab-t">Top rated</span>
+                    <span class="tab-v" x-text="ratedInfo.value"></span>
+                    <span class="tab-s" x-text="ratedInfo.sub"></span>
+                  </button>
+                  <button type="button" class="tab" :class="{active: sort==='longest'}" @click="sort='longest'">
+                    <span class="tab-t">Longest stay</span>
+                    <span class="tab-v" x-text="longestInfo.value"></span>
+                    <span class="tab-s" x-text="longestInfo.sub"></span>
+                  </button>
+                  <label class="tab tab-sort">
+                    <select class="select" x-model="sort" aria-label="Sort stays">
+                      <option value="newest">Sort: Newest</option>
+                      <option value="oldest">Sort: Oldest</option>
+                      <option value="rated">Sort: Top rated</option>
+                      <option value="longest">Sort: Longest stay</option>
+                      <option value="price">Sort: Highest price</option>
+                    </select>
+                  </label>
+                </div>
+
+                <template x-if="visibleStays.length === 0">
+                  <div class="empty-state">No stays match these filters.</div>
+                </template>
+
+                <div class="stay-list">
+                  <template x-for="s in visibleStays" :key="s.id">
+                    <article class="stay-card">
+                      <div class="stay-photo" :class="{'has-img': s.image}" :style="{background: s.tint}">
+                        <img class="stay-photo-img" x-show="s.image" :src="s.image" alt="" loading="lazy" referrerpolicy="no-referrer" @error="s.image = null">
+                        <span class="stay-photo-mark" x-show="!s.image" x-text="initials(s.name)"></span>
+                        <span class="stay-photo-type" x-text="s.stay_type"></span>
+                      </div>
+                      <div class="stay-main">
+                        <div class="stay-top">
+                          <div class="stay-title">
+                            <h2 class="stay-name" x-text="s.name"></h2>
+                            <div class="stay-stars" x-show="s.stars" :aria-label="s.stars + ' stars'">
+                              <template x-for="i in starsArray(s)" :key="i"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.500l2.900 6 6.600.9-4.800 4.600 1.200 6.500L12 17.300 6.100 20.500l1.200-6.500L2.500 9.400l6.600-.9z"/></svg></template>
+                            </div>
+                          </div>
+                          <div class="stay-score" x-show="s.rating != null" :title="'Your rating: ' + (s.rating == null ? '' : s.rating.toFixed(1)) + ' out of 10'">
+                            <span class="stay-score-word" x-text="s.scoreWord"></span>
+                            <span class="stay-score-badge" x-text="s.rating == null ? '' : s.rating.toFixed(1)"></span>
+                          </div>
+                        </div>
+                        <div class="stay-place" x-show="s.place">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s7-6.200 7-12a7 7 0 0 0-14 0c0 5.800 7 12 7 12z"/><circle cx="12" cy="10" r="2.500"/></svg>
+                          <span x-text="s.place"></span>
+                        </div>
+                        <div class="stay-dates">
+                          <span><b x-text="fmtStayDate(s.check_in)"></b> <i>&rarr;</i> <b x-text="fmtStayDate(s.check_out)"></b></span>
+                          <span class="stay-nights" x-text="nightsText(s)"></span>
+                        </div>
+                        <div class="stay-facts">
+                          <span x-show="guestsText(s)" x-text="guestsText(s)"></span>
+                          <span x-show="s.booking_ref" x-text="'Ref ' + s.booking_ref"></span>
+                        </div>
+                        <div class="stay-rooms">
+                          <template x-for="(r, ri) in s.room_list" :key="ri">
+                            <div class="stay-room"><b x-text="s.room_list.length > 1 ? 'Room ' + (ri + 1) : 'Room'"></b><span x-show="r.room_type" x-text="r.room_type"></span><span class="stay-room-guests" x-text="guestNames(r, s)"></span></div>
+                          </template>
+                        </div>
+                        <p class="stay-notes" x-show="s.notes" x-text="s.notes"></p>
+                      </div>
+                      <aside class="stay-side">
+                        <div class="fc-side-body">
+                          <span class="fc-side-label" x-text="s.package_id ? 'Booked as' : 'Total cost'"></span>
+                          <span class="fc-price" :class="{none: !s.package_id && s.price == null, pkg: s.package_id}" x-text="s.package_id ? 'Part of a package' : (s.price != null ? fmtMoney(s.price) : 'Not recorded')"></span>
+                          <a class="fc-side-sub pkg-link" x-show="s.package_id" href="#/packages" x-text="s.package_name"></a>
+                          <span class="fc-side-sub" x-show="s.perNight != null" x-text="fmtMoney(s.perNight) + ' per night'"></span>
+                        </div>
+                        <button type="button" class="btn btn-block" x-show="s.lat != null" @click="toggleMap(s)" x-text="s._map ? 'Hide map' : 'Show map'"></button>
+                        <a class="btn btn-navy btn-block" :href="'#/stay?id=' + s.id">Show details &rarr;</a>
+                      </aside>
+                      <template x-if="s._map && s.lat != null">
+                        <div class="stay-map" x-effect="pinMapCard($el, s)" role="img" :aria-label="'Map of ' + s.name"></div>
+                      </template>
+                    </article>
+                  </template>
+                </div>
+              </div>
+            </template>
+          </section>
+        </div>
+      </template>
+
+      <!-- ================================ STAY DETAILS =============================== -->
+      <template x-if="route==='stay'">
+        <div class="detail" x-data="stayDetail(params.id || '')" x-init="load()">
+          <a href="#/stays" class="back-link">&larr; Back to stays</a>
+          <template x-if="error"><p class="form-error" x-text="error"></p></template>
+          <template x-if="loading && !error"><p class="form-hint">Loading&hellip;</p></template>
+          <template x-if="!loading && s">
+            <div>
+              <div class="detail-head">
+                <div class="detail-head-text">
+                  <h1 class="h1" style="margin:0;" x-text="s.name"></h1>
+                  <div class="form-hint" x-text="subtitle"></div>
+                </div>
+                <div class="detail-actions">
+                  <a class="btn" :href="'#/package?id=' + s.package_id" x-show="s.package_id" x-text="'Part of ' + (s.package_name || 'a package')"></a>
+                  <a class="btn btn-navy" :href="'#/stay-add?id=' + s.id">Edit stay</a>
+                  <button type="button" class="btn btn-danger" :disabled="busy" @click="del()">Delete stay</button>
+                </div>
+              </div>
+
+              <div class="detail-split">
+                <aside class="fd-panel">
+                  <h2 class="fd-title">Stay Details</h2>
+                  <div class="detail-hero" :class="{'has-img': s.image}" :style="{background: s.tint}">
+                    <img class="stay-photo-img" x-show="s.image" :src="s.image" :alt="s.name" referrerpolicy="no-referrer" @error="s.image = null">
+                    <span class="stay-photo-mark" x-show="!s.image" x-text="initials(s.name)"></span>
+                    <span class="stay-photo-type" x-text="s.stay_type"></span>
+                  </div>
+                  <div class="fd-dir"><span><b>Your stay</b></span><span class="stay-stars" x-show="s.stars" :aria-label="s.stars + ' stars'"><template x-for="i in starsArray(s)" :key="i"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.500l2.900 6 6.600.9-4.800 4.600 1.200 6.500L12 17.300 6.100 20.500l1.200-6.500L2.500 9.400l6.600-.9z"/></svg></template></span></div>
+                  <div class="fd-card">
+                    <div class="fd-body fd-body-first">
+                      <div class="fd-timeline">
+                        <div class="fd-stop"><span class="fd-t">In</span><span class="fd-place"><b x-text="fmtStayDate(s.check_in)"></b></span></div>
+                        <div class="fd-bubble-row"><span class="fd-bubble" x-text="nightsLabel"></span></div>
+                        <div class="fd-stop"><span class="fd-t">Out</span><span class="fd-place"><b x-text="fmtStayDate(s.check_out)"></b></span></div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="fd-map-section" x-show="s.lat != null">
+                    <h2 class="fd-title">Map</h2>
+                    <template x-if="s.lat != null"><div class="fd-map" x-effect="pinMap($el)" role="img" :aria-label="'Map of ' + s.name"></div></template>
+                  </div>
+                </aside>
+
+                <div class="detail-main">
+                  <section class="form-card">
+                    <h3 class="settings-section-title">Stay</h3>
+                    <dl class="facts"><template x-for="row in stayFacts" :key="row[0]"><div><dt x-text="row[0]"></dt><dd x-text="row[1]"></dd></div></template></dl>
+                  </section>
+                  <section class="form-card">
+                    <h3 class="settings-section-title">Dates</h3>
+                    <dl class="facts"><template x-for="row in dateFacts" :key="row[0]"><div><dt x-text="row[0]"></dt><dd x-text="row[1]"></dd></div></template></dl>
+                  </section>
+                  <section class="form-card">
+                    <h3 class="settings-section-title">Rooms &amp; guests</h3>
+                    <dl class="facts"><template x-for="(r, ri) in s.room_list" :key="ri"><div><dt x-text="(s.room_list.length > 1 ? 'Room ' + (ri + 1) : 'Room') + (r.room_type ? ' · ' + r.room_type : '')"></dt><dd x-text="roomGuests(r)"></dd></div></template></dl>
+                  </section>
+                  <section class="form-card">
+                    <h3 class="settings-section-title">Cost &amp; booking</h3>
+                    <dl class="facts">
+                      <template x-for="row in costFacts" :key="row[0]"><div><dt x-text="row[0]"></dt><dd x-text="row[1]"></dd></div></template>
+                      <template x-if="costFacts.length === 0"><div><dt>Total cost</dt><dd>Not recorded</dd></div></template>
+                    </dl>
+                  </section>
+                  <section class="form-card" x-show="s.notes">
+                    <h3 class="settings-section-title">Notes</h3>
+                    <p class="detail-notes" x-text="s.notes"></p>
+                  </section>
+                </div>
+              </div>
             </div>
           </template>
+        </div>
+      </template>
+
+      <!-- ================================ LOG A STAY ================================= -->
+      <template x-if="route==='stay-add'">
+        <div x-data="stayForm(params.id || '')" x-init="load()">
+          <div class="page-header">
+            <h1 class="page-title"><span class="eyebrow" x-text="editId ? 'Edit Entry' : 'New Entry'"></span><span x-text="editId ? 'Edit Stay' : 'Log a Stay'"></span></h1>
+          </div>
+          <template x-if="loading"><p class="form-hint">Loading&hellip;</p></template>
+          <form @submit.prevent="save()" x-show="!loading" novalidate>
+            <div class="form-card">
+              <h3 class="settings-section-title">Where did you stay?</h3>
+              <div class="form-grid">
+                <div class="form-field full"><label for="st-name">Name of hotel or property</label><input id="st-name" x-model="f.name" placeholder="e.g. Hotel Avenida Palace" maxlength="120" autocomplete="off"></div>
+                <div class="form-field"><label for="st-type">Type of stay</label>
+                  <select id="st-type" x-model="f.stay_type"><template x-for="t in types" :key="t"><option :value="t" x-text="t"></option></template></select>
+                </div>
+                <div class="form-field"><label for="st-city">City or town</label><input id="st-city" x-model="f.city" placeholder="e.g. Lisbon" maxlength="80"></div>
+                <div class="form-field"><label for="st-country">Country</label><input id="st-country" x-model="f.country" placeholder="e.g. Portugal" maxlength="80"></div>
+                <div class="form-field full form-field-wrap" @click.outside="addr.open = false">
+                  <label for="st-address">Address <span class="opt">(search to drop a pin on the map)</span></label>
+                  <input id="st-address" x-model="f.address" @input.debounce.500ms="searchAddress()" @focus="if (addr.results.length || addr.msg) addr.open = true" @keydown.escape="addr.open = false"
+                         placeholder="Start typing a street address" maxlength="200" autocomplete="off" role="combobox" :aria-expanded="addr.open">
+                  <span class="form-hint" x-show="addr.busy">Searching&hellip;</span>
+                  <ul class="dd-list" x-show="addr.open && addr.results.length" role="listbox">
+                    <template x-for="(r, ix) in addr.results" :key="ix">
+                      <li class="dd-item" role="option" @mousedown.prevent="pickAddress(r)">
+                        <svg class="dd-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s7-6.200 7-12a7 7 0 0 0-14 0c0 5.800 7 12 7 12z"/><circle cx="12" cy="10" r="2.500"/></svg>
+                        <span class="dd-text"><span class="dd-main" x-text="r.name ? r.name + ' \u2013 ' + r.address : r.address"></span><span class="dd-sub" x-text="r.label"></span></span>
+                      </li>
+                    </template>
+                  </ul>
+                  <p class="form-hint" x-show="addr.open && !addr.results.length && addr.msg" x-text="addr.msg"></p>
+                </div>
+                <template x-if="f.lat != null">
+                  <div class="form-field full">
+                    <div class="pin-map" x-effect="pinMapForm($el)" role="img" aria-label="Map showing the pin for this address"></div>
+                    <div class="pin-bar"><span class="form-hint">Pinned at <span x-text="pinText"></span>. Drag the pin to fine-tune it.</span><button type="button" class="link-btn" @click="clearPin()">Remove pin</button></div>
+                  </div>
+                </template>
+              </div>
+            </div>
+
+            <div class="form-card">
+              <h3 class="settings-section-title">Photo <span class="opt-title">(optional)</span></h3>
+              <div class="photo-grid">
+                <div class="photo-preview" :class="{empty: !photoSrc}">
+                  <template x-if="photoSrc"><img :src="photoSrc" alt="Preview of the photo" referrerpolicy="no-referrer" @error="linkBroken()" @load="linkLoaded()"></template>
+                  <span class="photo-empty" x-show="!photoSrc"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.800" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="10" r="1.800"/><path d="M21 16l-5-5-8 8"/></svg>No photo yet</span>
+                </div>
+                <div class="photo-controls">
+                  <div class="toggle-pill" role="group" aria-label="How to add a photo">
+                    <button type="button" :class="{active: photo.mode==='link'}" @click="setPhotoMode('link')">Image link</button>
+                    <button type="button" :class="{active: photo.mode==='upload'}" @click="setPhotoMode('upload')">Upload a photo</button>
+                  </div>
+                  <template x-if="photo.mode==='link'">
+                    <div class="form-field" style="margin-top:14px;">
+                      <label for="st-img-url">Link to an image</label>
+                      <input id="st-img-url" type="url" x-model="f.image_url" @input="photo.error = ''" placeholder="https://example.com/hotel.jpg" maxlength="500" autocomplete="off" inputmode="url">
+                      <p class="form-hint">On the hotel's website, right-click a photo and choose &ldquo;Copy image address&rdquo;, then paste it here. The photo stays on that website; if they remove it, it will disappear here too.</p>
+                    </div>
+                  </template>
+                  <template x-if="photo.mode==='upload'">
+                    <div style="margin-top:14px;">
+                      <label class="btn"><span x-text="photo.busy ? 'Preparing\u2026' : (photoSrc ? 'Choose a different photo' : 'Choose a photo')"></span><input type="file" accept="image/*" hidden @change="pickFile($event)"></label>
+                      <p class="form-hint" style="margin-top:10px;" x-text="photo.info || 'JPEG, PNG or WebP. It is resized before it is saved, and stored in your own FlightLog.'"></p>
+                    </div>
+                  </template>
+                  <p class="form-error" role="alert" x-show="photo.error" x-text="photo.error"></p>
+                  <button type="button" class="link-btn" style="margin-top:12px;" x-show="photo.mode !== 'none' || photoSrc" @click="removePhoto()">Remove photo</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="form-card">
+              <h3 class="settings-section-title">When?</h3>
+              <div class="form-grid">
+                <div class="form-field"><label for="st-in">Check-in</label><input id="st-in" type="date" x-model="f.check_in" @change="checkInChanged()"></div>
+                <div class="form-field"><label for="st-out">Check-out</label><input id="st-out" type="date" x-model="f.check_out" :min="f.check_in"></div>
+                <div class="form-field"><label>Length of stay</label><div class="stay-nights-box" :class="{bad: f.check_in && f.check_out && nights < 1}" x-text="nightsText || '\u2013'"></div></div>
+              </div>
+            </div>
+
+            <section class="leg-section" aria-labelledby="st-rooms-title">
+              <h2 class="leg-section-title" id="st-rooms-title">Rooms <span class="rooms-count" x-text="roomsSummary"></span></h2>
+              <template x-for="(room, i) in rooms" :key="room._k">
+                <div class="form-card leg-card">
+                  <div class="leg-head">
+                    <span class="leg-badge" x-text="roomTitle(i)"></span>
+                    <button type="button" class="link-btn" x-show="i > 0" @click="removeRoom(i)">Remove</button>
+                  </div>
+                  <div class="form-grid">
+                    <div class="form-field"><label :for="'st-roomtype-' + room._k">Room type</label>
+                      <input :id="'st-roomtype-' + room._k" x-model="room.room_type" list="st-room-types" placeholder="Choose or type, e.g. Superior double" maxlength="80" autocomplete="off">
+                    </div>
+                    <div class="guest-group full"><div class="guest-group-label">Who is staying in this room?</div>
+                      <div class="guest-chips">
+                        <template x-for="g in (i === 0 ? ['me'] : [])" :key="g">
+                          <span class="guest-chip locked" title="You are always the first guest in room 1"><span class="guest-tick">&#10003;</span>You</span>
+                        </template>
+                        <template x-for="c in companions" :key="c.id">
+                          <button type="button" class="guest-chip" :class="{on: inRoom(room, c.id)}" :aria-pressed="inRoom(room, c.id)" @click="toggleGuest(i, c.id)">
+                            <span class="guest-tick" x-text="inRoom(room, c.id) ? '\u2713' : '+'"></span><span x-text="c.name"></span><small x-show="otherRoomOf(i, c.id)" x-text="'in ' + otherRoomOf(i, c.id)"></small>
+                          </button>
+                        </template>
+                      </div>
+                      <p class="form-hint" x-show="companions.length === 0">No travel companions yet. Add some under <a href="#/companions">Companions</a> to put them in a room.</p>
+                    </div>
+                  </div>
+                </div>
+              </template>
+              <datalist id="st-room-types"><template x-for="t in roomTypes" :key="t"><option :value="t"></option></template></datalist>
+              <button type="button" class="btn add-leg" @click="addRoom()">+ Add a room</button>
+            </section>
+
+            <div class="form-card">
+              <h3 class="settings-section-title">How was it?</h3>
+              <div class="form-grid">
+                <div class="form-field"><label>Hotel class</label>
+                  <div class="star-picker" role="radiogroup" aria-label="Hotel star rating">
+                    <template x-for="n in 5" :key="n">
+                      <button type="button" class="star-btn" :class="{on: n <= f.stars}" role="radio" :aria-checked="f.stars === n" :aria-label="n + (n === 1 ? ' star' : ' stars')" @click="setStars(n)">
+                        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.500l2.900 6 6.600.9-4.800 4.600 1.200 6.500L12 17.300 6.100 20.500l1.200-6.500L2.500 9.400l6.600-.9z"/></svg>
+                      </button>
+                    </template>
+                  </div>
+                </div>
+                <div class="form-field"><label for="st-rating">Your rating (0&ndash;10)</label><input id="st-rating" type="number" min="0" max="10" step="0.1" x-model="f.rating" placeholder="e.g. 8.5"></div>
+                <div class="form-field" x-show="!pkg"><label for="st-price">Total cost (&pound;)</label><input id="st-price" inputmode="decimal" x-model="f.price" @blur="tidyPrice()" placeholder="e.g. 468.00"></div>
+                <div class="form-field" x-show="pkg"><label>Total cost</label><div class="stay-nights-box">Part of a package</div><span class="form-hint">This stay is in <a :href="'#/package-add?id=' + (pkg ? encodeURIComponent(pkg.id) : '')" x-text="pkg ? pkg.name : ''"></a>, so the price is on the package.</span></div>
+                <div class="form-field"><label for="st-ref">Booking reference <span class="opt">(optional)</span></label><input id="st-ref" x-model="f.booking_ref" maxlength="40"></div>
+                <div class="form-field full"><label for="st-notes">Notes <span class="opt">(optional)</span></label><textarea id="st-notes" x-model="f.notes" rows="3" maxlength="500" placeholder="Anything worth remembering"></textarea></div>
+              </div>
+            </div>
+
+            <template x-if="error"><p class="form-error" role="alert" x-text="error"></p></template>
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary" :disabled="saving" x-text="saving ? 'Saving\u2026' : (editId ? 'Save changes' : 'Save stay')"></button>
+              <a href="#/stays" class="btn">Cancel</a>
+              <button type="button" class="btn btn-danger" x-show="editId" @click="remove()" style="margin-left:auto;">Delete stay</button>
+            </div>
+          </form>
+        </div>
+      </template>
+
+      <!-- ============================ TRAVEL COMPANIONS ============================ -->
+      <!-- ================================= PACKAGES ================================== -->
+      <template x-if="route==='packages'">
+        <div class="layout" x-data="packageList()" x-init="load()">
+          <aside class="filters">
+            <a href="#/package-add" class="btn btn-grey btn-block">+ Log a package</a>
+
+            <div class="filter-group" x-show="packages.length">
+              <button type="button" class="filter-head" @click="open.year = !open.year">
+                <span>Year</span>
+                <svg :class="{flip: !open.year}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.500" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>
+              </button>
+              <div class="filter-body" x-show="open.year">
+                <label class="check"><input type="radio" value="__all__" x-model="yearFilter"><span class="check-text">All years</span><span class="check-count" x-text="packages.length"></span></label>
+                <template x-for="y in years" :key="y.name">
+                  <label class="check"><input type="radio" :value="y.name" x-model="yearFilter"><span class="check-text" x-text="y.name"></span><span class="check-count" x-text="y.n"></span></label>
+                </template>
+              </div>
+            </div>
+
+            <div class="filter-group" x-show="boardOptions.length">
+              <button type="button" class="filter-head" @click="open.board = !open.board">
+                <span>Board basis</span>
+                <svg :class="{flip: !open.board}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.500" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>
+              </button>
+              <div class="filter-body" x-show="open.board">
+                <template x-for="o in boardOptions" :key="o.name">
+                  <label class="check"><input type="checkbox" :value="o.name" x-model="boardFilter"><span class="check-text" x-text="o.name"></span><span class="check-count" x-text="o.n"></span></label>
+                </template>
+              </div>
+            </div>
+
+            <div class="filter-group" x-show="countryOptions.length">
+              <button type="button" class="filter-head" @click="open.country = !open.country">
+                <span>Country</span>
+                <svg :class="{flip: !open.country}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.500" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>
+              </button>
+              <div class="filter-body" x-show="open.country">
+                <template x-for="o in countryOptions" :key="o.name">
+                  <label class="check"><input type="checkbox" :value="o.name" x-model="countryFilter"><span class="check-text" x-text="o.name"></span><span class="check-count" x-text="o.n"></span></label>
+                </template>
+              </div>
+            </div>
+
+            <div class="filter-group" x-show="providerOptions.length">
+              <button type="button" class="filter-head" @click="open.provider = !open.provider">
+                <span>Holiday company</span>
+                <svg :class="{flip: !open.provider}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.500" stroke-linecap="round" stroke-linejoin="round"><path d="m6 15 6-6 6 6"/></svg>
+              </button>
+              <div class="filter-body" x-show="open.provider">
+                <template x-for="o in providerOptions" :key="o.name">
+                  <label class="check"><input type="checkbox" :value="o.name" x-model="providerFilter"><span class="check-text" x-text="o.name"></span><span class="check-count" x-text="o.n"></span></label>
+                </template>
+              </div>
+            </div>
+          </aside>
+
+          <section class="results">
+            <h1 class="h1">Your package holidays</h1>
+            <p class="sub">Flights, hotel and transfers booked together, all in one place.</p>
+
+            <template x-if="error"><p class="form-error" x-text="error"></p></template>
+            <template x-if="loading && !error"><p class="form-hint">Loading&hellip;</p></template>
+            <template x-if="!loading && !error && packages.length === 0">
+              <div class="empty-state">No package holidays yet. <a href="#/package-add">Log your first package</a>, or open one of your trips and choose &ldquo;Convert to package&rdquo;.</div>
+            </template>
+
+            <template x-if="!loading && packages.length > 0">
+              <div>
+                <div class="results-line">
+                  <span><span x-text="summaryLine"></span><span x-show="totalSpent > 0"> &middot; <span x-text="fmtMoney(totalSpent)"></span> spent</span> &middot; sorted by <b x-text="sortLabel"></b></span>
+                  <button type="button" class="link-btn" x-show="filtersActive" @click="resetFilters()">Reset filters</button>
+                </div>
+
+                <div class="tabs">
+                  <button type="button" class="tab" :class="{active: sort==='newest'}" @click="sort='newest'">
+                    <span class="tab-t">Newest</span>
+                    <span class="tab-v" x-text="newestInfo.value"></span>
+                    <span class="tab-s" x-text="newestInfo.sub"></span>
+                  </button>
+                  <button type="button" class="tab" :class="{active: sort==='price'}" @click="sort='price'">
+                    <span class="tab-t">Highest price</span>
+                    <span class="tab-v" x-text="priciestInfo.value"></span>
+                    <span class="tab-s" x-text="priciestInfo.sub"></span>
+                  </button>
+                  <button type="button" class="tab" :class="{active: sort==='longest'}" @click="sort='longest'">
+                    <span class="tab-t">Longest holiday</span>
+                    <span class="tab-v" x-text="longestInfo.value"></span>
+                    <span class="tab-s" x-text="longestInfo.sub"></span>
+                  </button>
+                  <label class="tab tab-sort">
+                    <select class="select" x-model="sort" aria-label="Sort packages">
+                      <option value="newest">Sort: Newest</option>
+                      <option value="oldest">Sort: Oldest</option>
+                      <option value="longest">Sort: Longest holiday</option>
+                      <option value="price">Sort: Highest price</option>
+                    </select>
+                  </label>
+                </div>
+
+                <template x-if="visiblePackages.length === 0">
+                  <div class="empty-state">No packages match these filters.</div>
+                </template>
+
+                <div class="stay-list">
+                  <template x-for="p in visiblePackages" :key="p.id">
+                    <article class="stay-card pkg-card">
+                      <div class="stay-photo" :class="{'has-img': p.image}" :style="{background: p.tint}">
+                        <img class="stay-photo-img" x-show="p.image" :src="p.image" alt="" loading="lazy" referrerpolicy="no-referrer" @error="p.image = null">
+                        <span class="stay-photo-mark" x-show="!p.image" x-text="initials(p.name)"></span>
+                        <span class="stay-photo-type" x-text="p.board || 'Package holiday'"></span>
+                      </div>
+                      <div class="stay-main">
+                        <div class="stay-top">
+                          <div class="stay-title">
+                            <h2 class="stay-name" x-text="p.name"></h2>
+                            <div class="stay-stars" x-show="p.hotel && p.hotel.stars" :aria-label="(p.hotel ? p.hotel.stars : 0) + ' stars'">
+                              <template x-for="i in starsArray(p.hotel)" :key="i"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2.500l2.900 6 6.600.9-4.800 4.600 1.200 6.500L12 17.300 6.100 20.500l1.200-6.500L2.500 9.400l6.600-.9z"/></svg></template>
+                            </div>
+                          </div>
+                          <span class="pkg-tag">Package holiday</span>
+                        </div>
+                        <div class="stay-place" x-show="p.place">
+                          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 22s7-6.200 7-12a7 7 0 0 0-14 0c0 5.800 7 12 7 12z"/><circle cx="12" cy="10" r="2.500"/></svg>
+                          <span x-text="p.place"></span>
+                        </div>
+                        <div class="stay-dates">
+                          <span><b x-text="fmtStayDate(p.start)"></b> <i>&rarr;</i> <b x-text="fmtStayDate(p.end)"></b></span>
+                          <span class="stay-nights" x-text="nightsText(p)"></span>
+                        </div>
+                        <ul class="pkg-includes">
+                          <template x-for="t in p.trips" :key="t.key">
+                            <li><span class="pkg-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M21 16v-2l-8-5V3.500a1.500 1.500 0 0 0-3 0V9l-8 5v2l8-2.500V19l-2 1.500V22l3.500-1 3.500 1v-1.500L13 19v-5.500z"/></svg></span><span class="pkg-line"><b x-text="tripRoute(t)"></b><small x-text="tripSub(t)"></small></span></li>
+                          </template>
+                          <template x-for="s in p.stays" :key="s.id">
+                            <li><span class="pkg-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 20V6M3 14h18v6M21 14v-2a3 3 0 0 0-3-3h-7v5"/><circle cx="7" cy="10.500" r="1.800"/></svg></span><span class="pkg-line"><b x-text="s.name"></b><small x-text="nightsText(s) + ' · ' + s.stay_type + ' · ' + guestsText(s)"></small></span></li>
+                          </template>
+                          <li x-show="p.transfers.length"><span class="pkg-ico" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="6" width="18" height="10" rx="2"/><circle cx="8" cy="18" r="1.600"/><circle cx="16" cy="18" r="1.600"/><path d="M3 11h18"/></svg></span><span class="pkg-line"><b>Transfers</b><small x-text="transferText(p)"></small></span></li>
+                        </ul>
+                        <div class="stay-facts">
+                          <span x-show="p.provider" x-text="p.provider"></span>
+                          <span x-show="p.travellers" x-text="p.travellers + (p.travellers === 1 ? ' traveller' : ' travellers')"></span>
+                          <span x-show="p.booking_ref" x-text="'Ref ' + p.booking_ref"></span>
+                        </div>
+                        <p class="stay-notes" x-show="p.notes" x-text="p.notes"></p>
+                      </div>
+                      <aside class="stay-side">
+                        <div class="fc-side-body">
+                          <span class="fc-side-label">Total price</span>
+                          <span class="fc-price" :class="{none: p.price == null}" x-text="p.price != null ? fmtMoney(p.price) : 'Not recorded'"></span>
+                          <span class="fc-side-sub" x-show="p.perPerson != null" x-text="fmtMoney(p.perPerson) + ' per person'"></span>
+                        </div>
+                        <a class="btn btn-navy btn-block" :href="'#/package?id=' + p.id">Show details &rarr;</a>
+                      </aside>
+                    </article>
+                  </template>
+                </div>
+              </div>
+            </template>
+          </section>
+        </div>
+      </template>
+
+      <!-- =============================== PACKAGE DETAILS ============================= -->
+      <template x-if="route==='package'">
+        <div class="detail" x-data="packageDetail(params.id || '')" x-init="load()">
+          <a href="#/packages" class="back-link">&larr; Back to packages</a>
+          <template x-if="error"><p class="form-error" x-text="error"></p></template>
+          <template x-if="loading && !error"><p class="form-hint">Loading&hellip;</p></template>
+          <template x-if="!loading && p">
+            <div>
+              <div class="detail-head">
+                <div class="detail-head-text">
+                  <h1 class="h1" style="margin:0;" x-text="p.name"></h1>
+                  <div class="form-hint" x-text="subtitle"></div>
+                </div>
+                <div class="detail-actions">
+                  <a class="btn btn-navy" :href="'#/package-add?id=' + p.id">Edit package</a>
+                  <button type="button" class="btn btn-danger" :disabled="busy" @click="del()">Delete package</button>
+                </div>
+              </div>
+
+              <div class="detail-split">
+                <aside class="fd-panel">
+                  <h2 class="fd-title">Package Details</h2>
+                  <div class="detail-hero" :class="{'has-img': p.image}" :style="{background: p.tint}">
+                    <img class="stay-photo-img" x-show="p.image" :src="p.image" :alt="p.name" referrerpolicy="no-referrer" @error="p.image = null">
+                    <span class="stay-photo-mark" x-show="!p.image" x-text="initials(p.name)"></span>
+                    <span class="stay-photo-type" x-text="p.board || 'Package holiday'"></span>
+                  </div>
+
+                  <template x-for="t in p.trips" :key="t.key">
+                    <div>
+                      <div class="fd-dir"><span><b x-text="tripRoute(t)"></b></span><a :href="'#/trip?id=' + t.key" class="link-btn" x-text="t.legs.length > 1 ? 'View trip' : 'View flight'"></a></div>
+                      <template x-for="l in t.legs" :key="l.id">
+                        <div class="fd-card">
+                          <div class="fd-body fd-body-first">
+                            <div class="fd-sub"><span x-text="legTitle(l)"></span><span class="fd-date" x-text="fmtStayDate(l.date)"></span></div>
+                            <div class="fd-timeline">
+                              <div class="fd-stop"><span class="fd-t" x-text="l.departure_time || '–'"></span><span class="fd-place"><b x-text="l.from_airport.iata"></b> <span x-text="l.from_airport.name"></span></span></div>
+                              <div class="fd-bubble-row" x-show="fmtDist(l.distance_km)"><span class="fd-bubble" x-text="fmtDist(l.distance_km)"></span></div>
+                              <div class="fd-stop"><span class="fd-t" x-text="l.arrival_time || '–'"></span><span class="fd-place"><b x-text="l.to_airport.iata"></b> <span x-text="l.to_airport.name"></span></span></div>
+                            </div>
+                          </div>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+
+                  <template x-for="s in p.stays" :key="s.id">
+                    <div>
+                      <div class="fd-dir"><span><b>Stay</b></span><a :href="'#/stay?id=' + s.id" class="link-btn">View stay</a></div>
+                      <div class="fd-card">
+                        <div class="fd-body fd-body-first">
+                          <div class="fd-sub"><span x-text="s.name"></span><span class="fd-date" x-text="s.stay_type"></span></div>
+                          <div class="fd-timeline">
+                            <div class="fd-stop"><span class="fd-t">In</span><span class="fd-place"><b x-text="fmtStayDate(s.check_in)"></b></span></div>
+                            <div class="fd-bubble-row"><span class="fd-bubble" x-text="nightsOf(s)"></span></div>
+                            <div class="fd-stop"><span class="fd-t">Out</span><span class="fd-place"><b x-text="fmtStayDate(s.check_out)"></b></span></div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </template>
+
+                  <template x-if="p.transfers.length">
+                    <div>
+                      <div class="fd-dir"><span><b>Transfers</b></span></div>
+                      <template x-for="t in p.transfers" :key="t.id">
+                        <div class="fd-card">
+                          <div class="fd-body fd-body-first">
+                            <div class="fd-sub"><span x-text="transferTitle(t)"></span><span class="fd-date" x-text="transferWhen(t)"></span></div>
+                            <div class="fd-timeline">
+                              <div class="fd-stop"><span class="fd-t">From</span><span class="fd-place" x-text="t.from_place || '–'"></span></div>
+                              <div class="fd-stop"><span class="fd-t">To</span><span class="fd-place" x-text="t.to_place || '–'"></span></div>
+                            </div>
+                            <p class="detail-notes" x-show="t.notes" x-text="t.notes" style="margin-top:10px;"></p>
+                          </div>
+                        </div>
+                      </template>
+                    </div>
+                  </template>
+
+                  <div class="fd-map-section" x-show="pinStay">
+                    <h2 class="fd-title">Map</h2>
+                    <template x-if="pinStay"><div class="fd-map" x-effect="pinMap($el)" role="img" :aria-label="'Map of ' + pinStay.name"></div></template>
+                  </div>
+                </aside>
+
+                <div class="detail-main">
+                  <section class="form-card">
+                    <h3 class="settings-section-title">Package</h3>
+                    <dl class="facts"><template x-for="row in packageFacts" :key="row[0]"><div><dt x-text="row[0]"></dt><dd x-text="row[1]"></dd></div></template></dl>
+                  </section>
+                  <section class="form-card">
+                    <h3 class="settings-section-title">Dates</h3>
+                    <dl class="facts"><template x-for="row in dateFacts" :key="row[0]"><div><dt x-text="row[0]"></dt><dd x-text="row[1]"></dd></div></template></dl>
+                  </section>
+                  <section class="form-card">
+                    <h3 class="settings-section-title">What is included</h3>
+                    <dl class="facts"><template x-for="row in includedFacts" :key="row[0]"><div><dt x-text="row[0]"></dt><dd x-text="row[1]"></dd></div></template></dl>
+                  </section>
+                  <section class="form-card">
+                    <h3 class="settings-section-title">Cost</h3>
+                    <dl class="facts"><template x-for="row in costFacts" :key="row[0]"><div><dt x-text="row[0]"></dt><dd x-text="row[1]"></dd></div></template></dl>
+                  </section>
+                  <section class="form-card" x-show="p.notes">
+                    <h3 class="settings-section-title">Notes</h3>
+                    <p class="detail-notes" x-text="p.notes"></p>
+                  </section>
+                </div>
+              </div>
+            </div>
+          </template>
+        </div>
+      </template>
+
+      <!-- ============================== LOG A PACKAGE =============================== -->
+      <template x-if="route==='package-add'">
+        <div x-data="packageForm(params.id || '', params.trip || '')" x-init="load()">
+          <div class="page-header">
+            <h1 class="page-title"><span class="eyebrow" x-text="editId ? 'Edit Entry' : 'New Entry'"></span><span x-text="editId ? 'Edit Package' : 'Log a Package'"></span></h1>
+          </div>
+          <template x-if="loading"><p class="form-hint">Loading&hellip;</p></template>
+          <form @submit.prevent="save()" x-show="!loading" novalidate>
+            <div class="form-card">
+              <h3 class="settings-section-title">About the package</h3>
+              <p class="form-hint pkg-hint" x-show="hint" x-text="hint"></p>
+              <div class="form-grid">
+                <div class="form-field full"><label for="pk-name">Name</label><input id="pk-name" x-model="f.name" placeholder="e.g. Majorca summer holiday" maxlength="120" autocomplete="off"></div>
+                <div class="form-field"><label for="pk-provider">Holiday company <span class="opt">(optional)</span></label><input id="pk-provider" x-model="f.provider" placeholder="e.g. Jet2holidays" maxlength="80" autocomplete="off"></div>
+                <div class="form-field"><label for="pk-board">Board basis <span class="opt">(optional)</span></label>
+                  <select id="pk-board" x-model="f.board"><option value="">Not set</option><template x-for="b in boards" :key="b"><option :value="b" x-text="b"></option></template></select>
+                </div>
+                <div class="form-field"><label for="pk-dest">Resort or destination</label><input id="pk-dest" x-model="f.destination" placeholder="e.g. Palma Nova" maxlength="80"></div>
+                <div class="form-field"><label for="pk-country">Country</label><input id="pk-country" x-model="f.country" placeholder="e.g. Spain" maxlength="80"></div>
+                <div class="form-field"><label for="pk-trav">Travellers</label><input id="pk-trav" type="number" min="1" max="50" x-model="f.travellers" placeholder="e.g. 2"></div>
+                <div class="form-field"><label for="pk-ref">Booking reference <span class="opt">(optional)</span></label><input id="pk-ref" x-model="f.booking_ref" maxlength="40"></div>
+              </div>
+            </div>
+
+            <div class="form-card">
+              <h3 class="settings-section-title">Flights in this package</h3>
+              <p class="form-hint">Tick the trips you flew as part of the package. They stay on the Flights page.</p>
+              <div class="pick-list" role="group" aria-label="Flights in this package">
+                <template x-for="t in freeTrips" :key="t.key">
+                  <label class="pick-row" :class="{on: isTrip(t.key)}">
+                    <input type="checkbox" :checked="isTrip(t.key)" @change="toggleTrip(t.key)">
+                    <span class="pick-main"><b x-text="tripRoute(t)"></b><small x-text="tripSub(t)"></small></span>
+                  </label>
+                </template>
+              </div>
+              <p class="form-hint" x-show="freeTrips.length === 0">No flights to pick yet. <a href="#/add">Log a flight</a> first.</p>
+              <p class="form-hint" x-show="busyTrips > 0" x-text="busyTrips + (busyTrips === 1 ? ' trip is' : ' trips are') + ' already in another package and not listed.'"></p>
+            </div>
+
+            <div class="form-card">
+              <h3 class="settings-section-title">Stay in this package</h3>
+              <p class="form-hint">Tick the hotel or hotels that came with it. They stay on the Stays page.</p>
+              <div class="pick-list" role="group" aria-label="Stays in this package">
+                <template x-for="s in freeStays" :key="s.id">
+                  <label class="pick-row" :class="{on: isStay(s.id)}">
+                    <input type="checkbox" :checked="isStay(s.id)" @change="toggleStay(s.id)">
+                    <span class="pick-main"><b x-text="s.name"></b><small x-text="staySub(s)"></small></span>
+                  </label>
+                </template>
+              </div>
+              <p class="form-hint" x-show="freeStays.length === 0">No stays to pick yet. <a href="#/stay-add">Log a stay</a> first.</p>
+              <p class="form-hint" x-show="busyStays > 0" x-text="busyStays + (busyStays === 1 ? ' stay is' : ' stays are') + ' already in another package and not listed.'"></p>
+            </div>
+
+            <section class="leg-section" aria-labelledby="pk-transfers-title">
+              <h2 class="leg-section-title" id="pk-transfers-title">Transfers <span class="rooms-count" x-text="transfers.length === 0 ? 'none added' : transfers.length + (transfers.length === 1 ? ' transfer' : ' transfers')"></span></h2>
+              <template x-for="(t, i) in transfers" :key="t._k">
+                <div class="form-card leg-card">
+                  <div class="leg-head">
+                    <span class="leg-badge" x-text="transferTitle(t, i)"></span>
+                    <button type="button" class="link-btn" @click="removeTransfer(i)">Remove</button>
+                  </div>
+                  <div class="form-grid">
+                    <div class="form-field"><label :for="'pk-tk-' + t._k">Type</label>
+                      <select :id="'pk-tk-' + t._k" x-model="t.kind"><option value="arrival">Airport to hotel</option><option value="departure">Hotel to airport</option><option value="other">Other transfer</option></select>
+                    </div>
+                    <div class="form-field"><label :for="'pk-tm-' + t._k">How</label>
+                      <select :id="'pk-tm-' + t._k" x-model="t.mode"><template x-for="m in modes" :key="m"><option :value="m" x-text="m"></option></template></select>
+                    </div>
+                    <div class="form-field"><label :for="'pk-td-' + t._k">Date <span class="opt">(optional)</span></label><input :id="'pk-td-' + t._k" type="date" x-model="t.date"></div>
+                    <div class="form-field"><label :for="'pk-tt-' + t._k">Pick-up time <span class="opt">(optional)</span></label><input :id="'pk-tt-' + t._k" type="time" x-model="t.time"></div>
+                    <div class="form-field"><label :for="'pk-tf-' + t._k">From</label><input :id="'pk-tf-' + t._k" x-model="t.from_place" placeholder="e.g. Palma Airport" maxlength="100"></div>
+                    <div class="form-field"><label :for="'pk-tw-' + t._k">To</label><input :id="'pk-tw-' + t._k" x-model="t.to_place" placeholder="e.g. Hotel Playa Serena" maxlength="100"></div>
+                    <div class="form-field full"><label :for="'pk-tn-' + t._k">Notes <span class="opt">(optional)</span></label><input :id="'pk-tn-' + t._k" x-model="t.notes" maxlength="200" placeholder="e.g. 45 minutes, one other hotel stop"></div>
+                  </div>
+                </div>
+              </template>
+              <button type="button" class="btn add-leg" @click="addTransfer()">+ Add a transfer</button>
+            </section>
+
+            <div class="form-card">
+              <h3 class="settings-section-title">Price</h3>
+              <div class="form-grid">
+                <div class="form-field ff-price"><label for="pk-price">Total price of the package</label><span class="ff-money"><span class="ff-cur">&pound;</span><input id="pk-price" x-model="f.price" inputmode="decimal" placeholder="0.00" autocomplete="off" @change="tidyPrice()"></span></div>
+                <div class="form-field full"><label for="pk-notes">Notes <span class="opt">(optional)</span></label><textarea id="pk-notes" x-model="f.notes" rows="3" maxlength="500" placeholder="Anything worth remembering"></textarea></div>
+              </div>
+              <template x-if="error"><div class="form-error" style="margin-top:14px;" role="alert" x-text="error"></div></template>
+              <div class="form-actions">
+                <button class="btn btn-primary" type="submit" :disabled="saving" x-text="saving ? 'Saving…' : (editId ? 'Save changes' : 'Save package')"></button>
+                <a href="#/packages" class="btn">Cancel</a>
+                <button type="button" class="btn btn-danger" x-show="editId" @click="del()" style="margin-left:auto;">Delete package</button>
+              </div>
+            </div>
+          </form>
+        </div>
+      </template>
+
+      <template x-if="route==='companions'">
+        <div class="layout" x-data="companionsView()" x-init="load()">
+          <aside class="filters">
+            <div class="filter-group comp-add">
+              <div class="filter-head comp-add-head"><span>Add a companion</span></div>
+              <form @submit.prevent="add()" class="comp-form">
+                <div class="form-field"><label for="comp-name">Name</label><input id="comp-name" x-model="newName" required></div>
+                <div class="form-field"><label for="comp-rel">Relationship</label><input id="comp-rel" x-model="newRelationship" placeholder="e.g. Spouse, Friend"></div>
+                <div class="form-field"><label for="comp-dob">Date of birth</label><input id="comp-dob" type="date" x-model="newDob" :max="today" min="1900-01-01"></div>
+                <p class="form-hint">Optional. Used to work out their age on each trip. No date means adult.</p>
+                <p class="form-error" x-show="error" x-text="error"></p>
+                <button class="btn btn-primary btn-block" type="submit">Add companion</button>
+              </form>
+            </div>
+            <div class="filter-group">
+              <div class="filter-head comp-add-head"><span>Age groups</span></div>
+              <ul class="comp-rules">
+                <li><span class="age-chip age-infant">Infant</span> under 2</li>
+                <li><span class="age-chip age-child">Child</span> 2 to 15</li>
+                <li><span class="age-chip age-adult">Adult</span> 16 and over, or no date of birth</li>
+              </ul>
+            </div>
+          </aside>
+
+          <section class="results">
+            <h1 class="h1">Your travel companions</h1>
+            <p class="sub">The people you travel with. Their age on each trip is worked out from their date of birth.</p>
+
+            <template x-if="loading && !error"><p class="form-hint">Loading&hellip;</p></template>
+            <template x-if="!loading && companions.length === 0"><div class="empty-state">No travel companions yet. Add one using the form.</div></template>
+
+            <template x-if="!loading && companions.length > 0">
+              <div>
+                <div class="results-line"><span><span x-text="summaryLine"></span></span></div>
+                <template x-for="c in companions" :key="c.id">
+                  <div class="comp-card">
+                    <template x-if="editId !== c.id">
+                      <div class="companion-row">
+                        <div class="comp-main">
+                          <div class="comp-name"><strong x-text="c.name"></strong> <span class="comp-rel" x-text="c.relationship ? '(' + c.relationship + ')' : ''"></span></div>
+                          <div class="comp-meta">
+                            <span class="age-chip" :class="'age-' + groupOn(c)" x-text="groupText(c)"></span>
+                            <span x-show="c.date_of_birth" x-text="'Born ' + c.date_of_birth + ' \u00b7 age ' + FLCore.ageOn(c.date_of_birth, today)"></span>
+                            <span x-show="!c.date_of_birth">No date of birth, treated as an adult</span>
+                          </div>
+                        </div>
+                        <div class="companion-actions">
+                          <button type="button" class="btn btn-sm" @click="startEdit(c)">Edit</button>
+                          <button type="button" class="btn btn-sm btn-danger" @click="del(c.id)">Remove</button>
+                        </div>
+                      </div>
+                    </template>
+                    <template x-if="editId === c.id">
+                      <form @submit.prevent="saveEdit()" class="comp-edit">
+                        <div class="form-field"><label>Name</label><input x-model="edit.name" required></div>
+                        <div class="form-field"><label>Relationship</label><input x-model="edit.relationship"></div>
+                        <div class="form-field"><label>Date of birth</label><input type="date" x-model="edit.dob" :max="today" min="1900-01-01"></div>
+                        <div class="comp-edit-actions">
+                          <button class="btn btn-primary btn-sm" type="submit">Save</button>
+                          <button class="btn btn-sm" type="button" @click="cancelEdit()">Cancel</button>
+                        </div>
+                        <p class="form-error" x-show="editError" x-text="editError"></p>
+                      </form>
+                    </template>
+                  </div>
+                </template>
+              </div>
+            </template>
+          </section>
         </div>
       </template>
 
@@ -1011,7 +1847,7 @@
           <div class="form-card">
             <h3 class="settings-section-title">Backup &amp; Restore</h3>
             <p class="form-hint" style="margin-top:-4px; margin-bottom:16px;">
-              Export everything (flights, companions, settings) as one JSON file, or load a previous export.
+              Export everything (flights, stays, packages, companions, settings) as one JSON file, or load a file. An import can hold flights, stays, packages or any mix, so a file with just hotels works too. Anything already in your log is kept unless you tick Replace.
             </p>
             <div class="row-actions">
               <button type="button" class="btn btn-primary" @click="exportData()">Download export</button>
@@ -1019,7 +1855,7 @@
                 <input type="file" accept="application/json,.json" style="display:none;" @change="importData($event)">
               </label>
               <label class="form-hint" style="display:flex; align-items:center; gap:6px;">
-                <input type="checkbox" x-model="replaceOnImport"> Replace existing flights
+                <input type="checkbox" x-model="replaceOnImport"> Replace existing data of the same kind
               </label>
             </div>
             <template x-if="backupMsg"><p :class="backupOk ? 'form-ok' : 'form-error'" style="margin-top:10px;" x-text="backupMsg"></p></template>

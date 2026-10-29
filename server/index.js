@@ -68,6 +68,16 @@ CREATE TABLE IF NOT EXISTS flight_companions (
   PRIMARY KEY (flight_id, companion_id)
 );
 CREATE INDEX IF NOT EXISTS idx_flights_date ON flights(date);
+CREATE TABLE IF NOT EXISTS stays (
+  id TEXT PRIMARY KEY,
+  user_id TEXT,
+  name TEXT NOT NULL, city TEXT, country TEXT, address TEXT,
+  stay_type TEXT NOT NULL DEFAULT 'Hotel', stars REAL, rating REAL,
+  check_in TEXT NOT NULL, check_out TEXT NOT NULL,
+  room_type TEXT, guests INTEGER, rooms INTEGER, price REAL, booking_ref TEXT, notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_stays_user ON stays(user_id, check_in);
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   username TEXT NOT NULL UNIQUE COLLATE NOCASE,
@@ -94,11 +104,43 @@ CREATE TABLE IF NOT EXISTS sessions (
   // Per-account data. user_id NULL = created before accounts existed; it is adopted by the first account.
   if (!have.has('user_id')) db.exec('ALTER TABLE flights ADD COLUMN user_id TEXT');
   const compCols = new Set(db.prepare('PRAGMA table_info(travel_companions)').all().map((c) => c.name));
+  if (!compCols.has('date_of_birth')) db.exec('ALTER TABLE travel_companions ADD COLUMN date_of_birth TEXT');
   if (!compCols.has('user_id')) db.exec('ALTER TABLE travel_companions ADD COLUMN user_id TEXT');
   db.exec('CREATE INDEX IF NOT EXISTS idx_flights_user ON flights(user_id)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_companions_user ON travel_companions(user_id)');
   const airportCols = new Set(db.prepare('PRAGMA table_info(airports)').all().map((c) => c.name));
   if (!airportCols.has('tz')) db.exec('ALTER TABLE airports ADD COLUMN tz TEXT');
+}
+
+{
+  const sc = new Set(db.prepare('PRAGMA table_info(stays)').all().map((c) => c.name));
+  if (!sc.has('lat')) db.exec('ALTER TABLE stays ADD COLUMN lat REAL');
+  if (!sc.has('lon')) db.exec('ALTER TABLE stays ADD COLUMN lon REAL');
+  if (!sc.has('rooms_json')) db.exec('ALTER TABLE stays ADD COLUMN rooms_json TEXT');
+  if (!sc.has('image_url')) db.exec('ALTER TABLE stays ADD COLUMN image_url TEXT');
+  if (!sc.has('image_data')) db.exec('ALTER TABLE stays ADD COLUMN image_data TEXT');
+  if (!sc.has('package_id')) db.exec('ALTER TABLE stays ADD COLUMN package_id TEXT');
+  const fc = new Set(db.prepare('PRAGMA table_info(flights)').all().map((c) => c.name));
+  if (!fc.has('package_id')) db.exec('ALTER TABLE flights ADD COLUMN package_id TEXT');
+  // Package holidays: a package groups trips (flights) and stays, which keep living on their own pages, plus its transfers.
+  db.exec(`
+CREATE TABLE IF NOT EXISTS packages (
+  id TEXT PRIMARY KEY,
+  user_id TEXT,
+  name TEXT NOT NULL, provider TEXT, destination TEXT, country TEXT, board TEXT, travellers INTEGER,
+  price REAL, booking_ref TEXT, notes TEXT,
+  created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);
+CREATE INDEX IF NOT EXISTS idx_packages_user ON packages(user_id);
+CREATE TABLE IF NOT EXISTS package_transfers (
+  id TEXT PRIMARY KEY,
+  package_id TEXT NOT NULL REFERENCES packages(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL DEFAULT 0,
+  kind TEXT, mode TEXT, date TEXT, time TEXT, from_place TEXT, to_place TEXT, notes TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_flights_package ON flights(package_id);
+CREATE INDEX IF NOT EXISTS idx_stays_package ON stays(package_id);
+`);
 }
 
 function tx(fn) {
@@ -187,6 +229,10 @@ function airportOut(f, p) {
   return { iata: f[`${p}_iata`], name: f[`${p}_name`], city: f[`${p}_city`], country: f[`${p}_country`], lat: f[`${p}_lat`], lon: f[`${p}_lon`], tz: f[`${p}_tz`] || null };
 }
 
+function packageNameMap() {
+  return new Map(db.prepare('SELECT id, name FROM packages WHERE user_id = ?').all(CU.id).map((p) => [p.id, p.name]));
+}
+
 function listFlights() {
   const rows = db.prepare(`
     SELECT f.*, fa.name AS from_name, fa.city AS from_city, fa.country AS from_country, fa.lat AS from_lat, fa.lon AS from_lon, fa.tz AS from_tz,
@@ -197,7 +243,7 @@ function listFlights() {
     WHERE f.user_id = ?
     ORDER BY f.date DESC, f.created_at DESC`).all(CU.id);
   const links = db.prepare(`
-    SELECT fc.flight_id, tc.id, tc.name, tc.relationship
+    SELECT fc.flight_id, tc.id, tc.name, tc.relationship, tc.date_of_birth
     FROM flight_companions fc JOIN travel_companions tc ON tc.id = fc.companion_id
     JOIN flights fl ON fl.id = fc.flight_id
     WHERE fl.user_id = ? AND tc.user_id = ?
@@ -205,8 +251,9 @@ function listFlights() {
   const byFlight = new Map();
   for (const l of links) {
     if (!byFlight.has(l.flight_id)) byFlight.set(l.flight_id, []);
-    byFlight.get(l.flight_id).push({ id: l.id, name: l.name, relationship: l.relationship });
+    byFlight.get(l.flight_id).push({ id: l.id, name: l.name, relationship: l.relationship, date_of_birth: l.date_of_birth || null });
   }
+  const pkgNames = packageNameMap();
   return rows.map((f) => ({
     id: f.id, date: f.date, airline: f.airline, flight_number: f.flight_number,
     aircraft_type: f.aircraft_type, seat_class: f.seat_class, seat_number: f.seat_number,
@@ -214,6 +261,7 @@ function listFlights() {
     actual_departure_time: f.actual_departure_time, actual_arrival_time: f.actual_arrival_time,
     delay_reason: f.delay_reason, aircraft_registration: f.aircraft_registration || null, price: f.price == null ? null : f.price,
     trip_id: f.trip_id || null, direction: f.direction || 'outbound', leg_order: f.leg_order || 0,
+    package_id: f.package_id || null, package_name: f.package_id ? (pkgNames.get(f.package_id) || null) : null,
     from_airport: airportOut(f, 'from'),
     to_airport: airportOut(f, 'to'),
     companions: byFlight.get(f.id) || [],
@@ -307,9 +355,11 @@ function getTrip(key) {
   if (!rows.length) throw new HttpError(404, 'Trip not found');
   const link = db.prepare('SELECT companion_id FROM flight_companions WHERE flight_id = ?');
   const legs = rows.map((r) => ({ ...r, companion_ids: link.all(r.id).map((x) => x.companion_id) }));
+  const pkgId = rows.map((r) => r.package_id).find(Boolean) || null;
   return {
     trip_id: rows[0].trip_id || null,
     type: rows.some((r) => r.direction === 'return') ? 'return' : 'oneway',
+    package_id: pkgId, package_name: pkgId ? (packageNameMap().get(pkgId) || null) : null,
     legs,
   };
 }
@@ -342,6 +392,9 @@ function saveTrip(key, body) {
       if (!first) first = id;
     }
     for (const r of existing) if (!keep.has(r.id)) db.prepare('DELETE FROM flights WHERE id = ? AND user_id = ?').run(r.id, CU.id);
+    // flights added to a trip that is part of a package are part of that package too
+    const pkgId = existing.map((r) => r.package_id).find(Boolean);
+    if (pkgId) for (const id of keep) db.prepare('UPDATE flights SET package_id = ? WHERE id = ? AND user_id = ?').run(pkgId, id, CU.id);
     return { key: tripId || first, ids: [...keep] };
   });
 }
@@ -350,6 +403,245 @@ function deleteTrip(key) {
   const rows = tripRows(key);
   if (!rows.length) throw new HttpError(404, 'Trip not found');
   tx(() => { for (const r of rows) db.prepare('DELETE FROM flights WHERE id = ? AND user_id = ?').run(r.id, CU.id); });
+}
+
+/* -------------------------------------------------------------------- stays */
+
+const STAY_COLS = ['name', 'city', 'country', 'address', 'lat', 'lon', 'stay_type', 'stars', 'rating', 'check_in', 'check_out', 'room_type', 'guests', 'rooms', 'rooms_json', 'price', 'booking_ref', 'notes', 'image_url'];
+
+function cleanStay(body) {
+  try { return core.cleanStay(body); } catch (e) { throw new HttpError(e.status || 400, e.message); }
+}
+
+// Room lists keep "me" and ids of this account's companions only.
+function stayOut(r, mine, pkgNames) {
+  const { rooms_json, has_upload, up_len, ...rest } = r;
+  let list = null;
+  try { list = rooms_json ? JSON.parse(rooms_json) : null; } catch (_) { list = null; }
+  // a companion who has since been removed simply drops out of the room
+  if (Array.isArray(list) && mine) list = list.map((x) => ({ ...x, guests: (x.guests || []).filter((g) => g === 'me' || mine.has(g)) }));
+  const room_list = core.cleanRooms(list, r);
+  const image = has_upload ? `api/stays/${r.id}/image?v=${up_len}` : (rest.image_url || null);
+  const package_name = rest.package_id ? ((pkgNames || packageNameMap()).get(rest.package_id) || null) : null;
+  return { ...rest, package_id: rest.package_id || null, package_name, room_list, rooms: room_list.length, guests: room_list.reduce((n, x) => n + x.guests.length, 0), image, image_source: has_upload ? 'upload' : (rest.image_url ? 'link' : null) };
+}
+const myCompanionIds = () => new Set(db.prepare('SELECT id FROM travel_companions WHERE user_id = ?').all(CU.id).map((c) => c.id));
+
+function listStays() {
+  const mine = myCompanionIds();
+  const names = packageNameMap();
+  return db.prepare(`SELECT id, ${STAY_COLS.join(', ')}, package_id, created_at, image_data IS NOT NULL AS has_upload, length(image_data) AS up_len FROM stays WHERE user_id = ? ORDER BY check_in DESC, created_at DESC`).all(CU.id).map((r) => stayOut({ ...r }, mine, names));
+}
+
+function stayRow(id) {
+  const r = db.prepare(`SELECT id, ${STAY_COLS.join(', ')}, package_id, created_at, image_data IS NOT NULL AS has_upload, length(image_data) AS up_len FROM stays WHERE id = ? AND user_id = ?`).get(id, CU.id);
+  return r ? stayOut({ ...r }, myCompanionIds()) : null;
+}
+
+function stayValues(body, remap) {
+  const raw = body && typeof body === 'object' ? { ...body } : {};
+  if (remap && Array.isArray(raw.room_list)) {
+    raw.room_list = raw.room_list.map((r) => ({ ...(r || {}), guests: (Array.isArray(r && r.guests) ? r.guests : []).map((g) => remap(String(g))) }));
+  }
+  const s = cleanStay(raw);
+  const mine = new Set(db.prepare('SELECT id FROM travel_companions WHERE user_id = ?').all(CU.id).map((c) => c.id));
+  const room_list = s.room_list.map((r) => ({ room_type: r.room_type, guests: r.guests.filter((g) => g === 'me' || mine.has(g)) }));
+  const clean = { ...s, room_list, guests: room_list.reduce((n, r) => n + r.guests.length, 0), rooms_json: JSON.stringify(room_list) };
+  return STAY_COLS.map((c) => clean[c]);
+}
+
+const MAX_STAY_IMAGE = 2.5 * 1024 * 1024;
+// An uploaded photo arrives as a data URL (the browser shrinks it first). Only real JPEG, PNG or WebP files are kept.
+function checkImageData(v) {
+  const m = /^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/]+={0,2})$/.exec(String(v || ''));
+  if (!m) throw new HttpError(400, 'The photo must be a JPEG, PNG or WebP image.');
+  const buf = Buffer.from(m[2], 'base64');
+  if (buf.length > MAX_STAY_IMAGE) throw new HttpError(413, 'That photo is too large. Please use one under 2.5 MB.');
+  const ok = (m[1] === 'image/jpeg' && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff)
+    || (m[1] === 'image/png' && buf.slice(0, 4).toString('hex') === '89504e47')
+    || (m[1] === 'image/webp' && buf.slice(0, 4).toString() === 'RIFF' && buf.slice(8, 12).toString() === 'WEBP');
+  if (!ok) throw new HttpError(400, 'The photo does not look like a valid image file.');
+  return true;
+}
+
+function applyStayImage(id, body, vals) {
+  const hasNew = body && typeof body.image_data === 'string' && body.image_data !== '';
+  const linkSet = vals.image_url != null;
+  if (hasNew) {
+    checkImageData(body.image_data);
+    db.prepare('UPDATE stays SET image_data = ?, image_url = NULL WHERE id = ? AND user_id = ?').run(body.image_data, id, CU.id);
+  } else if (linkSet || (body && body.clear_image_data === true)) {
+    db.prepare('UPDATE stays SET image_data = NULL WHERE id = ? AND user_id = ?').run(id, CU.id);
+  }
+}
+
+function writeStay(id, body, remap) {
+  const vals = stayValues(body, remap);
+  if (id === null) {
+    id = crypto.randomUUID();
+    db.prepare(`INSERT INTO stays (id, user_id, ${STAY_COLS.join(', ')}) VALUES (?,?,${STAY_COLS.map(() => '?').join(',')})`).run(id, CU.id, ...vals);
+  } else {
+    db.prepare(`UPDATE stays SET ${STAY_COLS.map((c) => c + ' = ?').join(', ')} WHERE id = ? AND user_id = ?`).run(...vals, id, CU.id);
+  }
+  applyStayImage(id, body, Object.fromEntries(STAY_COLS.map((c, i) => [c, vals[i]])));
+  return id;
+}
+
+
+/* ----------------------------------------------------------------- packages */
+
+const PKG_COLS = ['name', 'provider', 'destination', 'country', 'board', 'travellers', 'price', 'booking_ref', 'notes'];
+
+function cleanPackage(body) {
+  try { return core.cleanPackage(body); } catch (e) { throw new HttpError(e.status || 400, e.message); }
+}
+
+// Everything a package page needs, built from the account's own flights, stays and transfers.
+function buildPackages(only) {
+  const rows = db.prepare(`SELECT id, ${PKG_COLS.join(', ')}, created_at FROM packages WHERE user_id = ?${only ? ' AND id = ?' : ''} ORDER BY created_at`).all(...(only ? [CU.id, only] : [CU.id]));
+  if (!rows.length) return [];
+  const flights = listFlights().filter((f) => f.package_id);
+  const stays = listStays().filter((s) => s.package_id);
+  const transfers = db.prepare('SELECT t.* FROM package_transfers t JOIN packages p ON p.id = t.package_id WHERE p.user_id = ? ORDER BY t.package_id, t.position').all(CU.id);
+  return rows.map((r) => {
+    const mine = flights.filter((f) => f.package_id === r.id);
+    const trips = new Map();
+    for (const f of mine) {
+      const key = f.trip_id || f.id;
+      if (!trips.has(key)) trips.set(key, { key, legs: [] });
+      trips.get(key).legs.push(f);
+    }
+    const tripList = [...trips.values()].map((t) => {
+      t.legs.sort((a, b) => (a.direction === 'return') - (b.direction === 'return') || a.leg_order - b.leg_order || a.date.localeCompare(b.date));
+      const out = t.legs.filter((l) => l.direction !== 'return');
+      const back = t.legs.filter((l) => l.direction === 'return');
+      return { key: t.key, type: back.length ? 'return' : 'oneway', legs: t.legs,
+        from: out[0].from_airport, to: out[out.length - 1].to_airport, date: t.legs[0].date,
+        distance_km: t.legs.reduce((n, l) => n + (l.distance_km || 0), 0) };
+    }).sort((a, b) => a.date.localeCompare(b.date));
+    const st = stays.filter((s) => s.package_id === r.id).sort((a, b) => a.check_in.localeCompare(b.check_in));
+    const tr = transfers.filter((t) => t.package_id === r.id).map(({ package_id, position, ...t }) => ({ ...t }));
+    const dates = [...mine.map((f) => f.date), ...st.flatMap((s) => [s.check_in, s.check_out]), ...tr.map((t) => t.date).filter(Boolean)].sort();
+    const start = dates[0] || null, end = dates[dates.length - 1] || null;
+    const hotel = st[0] || null;
+    return {
+      ...r,
+      start, end, nights: start && end ? core.stayNights(start, end) : 0,
+      trips: tripList, stays: st, transfers: tr,
+      trip_keys: tripList.map((t) => t.key), stay_ids: st.map((s) => s.id),
+      image: (st.find((s) => s.image) || {}).image || null,
+      place: [r.destination || (hotel && hotel.city), r.country || (hotel && hotel.country)].filter(Boolean).join(', '),
+    };
+  });
+}
+
+function packageById(id) {
+  const [p] = buildPackages(id);
+  return p || null;
+}
+
+function writePackage(id, body) {
+  const p = cleanPackage(body);
+  if (id && !db.prepare('SELECT 1 FROM packages WHERE id = ? AND user_id = ?').get(id, CU.id)) throw new HttpError(404, 'Package not found');
+  // the trips and stays picked must be this account's own and not already inside a different package
+  const tripRowsAll = p.trip_keys.map((k) => {
+    const rows = tripRows(k);
+    if (!rows.length) throw new HttpError(400, 'One of the chosen trips could not be found.');
+    if (rows.some((r) => r.package_id && r.package_id !== id)) throw new HttpError(400, 'A chosen trip is already part of another package.');
+    return rows;
+  });
+  const stayIds = p.stay_ids.map((sid) => {
+    const r = db.prepare('SELECT package_id FROM stays WHERE id = ? AND user_id = ?').get(sid, CU.id);
+    if (!r) throw new HttpError(400, 'One of the chosen stays could not be found.');
+    if (r.package_id && r.package_id !== id) throw new HttpError(400, 'A chosen stay is already part of another package.');
+    return sid;
+  });
+  if (!tripRowsAll.length && !stayIds.length) throw new HttpError(400, 'A package needs at least one trip or stay. Log them first, then pick them here.');
+  return tx(() => {
+    const vals = PKG_COLS.map((c) => p[c]);
+    if (!id) {
+      id = crypto.randomUUID();
+      db.prepare(`INSERT INTO packages (id, user_id, ${PKG_COLS.join(', ')}) VALUES (?,?,${PKG_COLS.map(() => '?').join(',')})`).run(id, CU.id, ...vals);
+    } else {
+      db.prepare(`UPDATE packages SET ${PKG_COLS.map((c) => c + ' = ?').join(', ')} WHERE id = ? AND user_id = ?`).run(...vals, id, CU.id);
+    }
+    db.prepare('UPDATE flights SET package_id = NULL WHERE package_id = ? AND user_id = ?').run(id, CU.id);
+    db.prepare('UPDATE stays SET package_id = NULL WHERE package_id = ? AND user_id = ?').run(id, CU.id);
+    for (const rows of tripRowsAll) for (const r of rows) db.prepare('UPDATE flights SET package_id = ? WHERE id = ? AND user_id = ?').run(id, r.id, CU.id);
+    for (const sid of stayIds) db.prepare('UPDATE stays SET package_id = ? WHERE id = ? AND user_id = ?').run(id, sid, CU.id);
+    storeTransfers(id, p.transfers);
+    return id;
+  });
+}
+
+function storeTransfers(packageId, list) {
+  db.prepare('DELETE FROM package_transfers WHERE package_id = ?').run(packageId);
+  const ins = db.prepare('INSERT INTO package_transfers (id, package_id, position, kind, mode, date, time, from_place, to_place, notes) VALUES (?,?,?,?,?,?,?,?,?,?)');
+  list.forEach((t, i) => ins.run(crypto.randomUUID(), packageId, i, t.kind, t.mode, t.date, t.time, t.from_place, t.to_place, t.notes));
+}
+
+// Deleting a package never deletes the flights or stays in it: they simply stop being "part of a package".
+function deletePackage(id) {
+  if (!db.prepare('SELECT 1 FROM packages WHERE id = ? AND user_id = ?').get(id, CU.id)) throw new HttpError(404, 'Package not found');
+  tx(() => {
+    db.prepare('UPDATE flights SET package_id = NULL WHERE package_id = ? AND user_id = ?').run(id, CU.id);
+    db.prepare('UPDATE stays SET package_id = NULL WHERE package_id = ? AND user_id = ?').run(id, CU.id);
+    db.prepare('DELETE FROM package_transfers WHERE package_id = ?').run(id);
+    db.prepare('DELETE FROM packages WHERE id = ? AND user_id = ?').run(id, CU.id);
+  });
+}
+
+/* ---------------------------------------------------------- address search */
+// Address look-ups go from this server to OpenStreetMap's Nominatim (or the service in FL_GEOCODER_URL), so the
+// browser never talks to it directly. Results are cached and requests are spaced out to respect their usage policy.
+const GEOCODER_URL = process.env.FL_GEOCODER_URL || 'https://nominatim.openstreetmap.org/search';
+const GEOCODING = !/^(0|false|off|no)$/i.test(String(process.env.FL_GEOCODING || 'on').trim());
+const geoCache = new Map();
+let geoChain = Promise.resolve();
+let geoLast = 0;
+
+function shortAddress(r) {
+  const a = r.address || {};
+  const street = [a.house_number, a.road || a.pedestrian || a.footway || a.path].filter(Boolean).join(' ');
+  const town = a.city || a.town || a.village || a.suburb || a.county || '';
+  return [street, town, a.postcode].filter(Boolean).join(', ') || String(r.display_name || '').split(',').slice(0, 3).join(',').trim();
+}
+
+async function geocode(q) {
+  if (!GEOCODING) throw new HttpError(503, 'Address search is switched off on this server.');
+  q = String(q || '').trim().slice(0, 200);
+  if (q.length < 4) return { results: [] };
+  const key = q.toLowerCase();
+  const hit = geoCache.get(key);
+  if (hit && Date.now() - hit.at < 24 * 3600 * 1000) return { results: hit.results };
+  const run = async () => {
+    const wait = geoLast + 1100 - Date.now();
+    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+    geoLast = Date.now();
+    const u = new URL(GEOCODER_URL);
+    u.searchParams.set('format', 'jsonv2');
+    u.searchParams.set('q', q);
+    u.searchParams.set('limit', '6');
+    u.searchParams.set('addressdetails', '1');
+    const res = await fetch(u, { headers: { 'User-Agent': `FlightLog/${require('../package.json').version} (self-hosted)`, 'Accept-Language': 'en' }, signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error('status ' + res.status);
+    return res.json();
+  };
+  const job = geoChain.then(run, run);
+  geoChain = job.catch(() => {});
+  let rows;
+  try { rows = await job; } catch (e) { throw new HttpError(502, 'Address search is not available right now. You can still type the address in by hand.'); }
+  const results = (Array.isArray(rows) ? rows : []).map((r) => {
+    const a = r.address || {};
+    return {
+      label: String(r.display_name || '').slice(0, 220), name: r.name ? String(r.name).slice(0, 120) : null,
+      address: shortAddress(r).slice(0, 200), city: a.city || a.town || a.village || a.municipality || null, country: a.country || null,
+      lat: Number(r.lat), lon: Number(r.lon),
+    };
+  }).filter((r) => Number.isFinite(r.lat) && Number.isFinite(r.lon));
+  if (geoCache.size > 500) geoCache.delete(geoCache.keys().next().value);
+  geoCache.set(key, { at: Date.now(), results });
+  return { results };
 }
 
 function exportAll() {
@@ -364,24 +656,44 @@ function exportAll() {
     version: 1,
     exported_at: new Date().toISOString(),
     settings: getSettings(),
-    companions: db.prepare('SELECT id, name, relationship FROM travel_companions WHERE user_id = ? ORDER BY name').all(CU.id).map((c) => ({ ...c })),
+    companions: db.prepare('SELECT id, name, relationship, date_of_birth FROM travel_companions WHERE user_id = ? ORDER BY name').all(CU.id).map((c) => ({ ...c })),
     airports,
     flights,
+    stays: listStays().map((st) => {
+      const row = db.prepare('SELECT image_data FROM stays WHERE id = ? AND user_id = ?').get(st.id, CU.id);
+      return row && row.image_data ? { ...st, image_data: row.image_data } : st;
+    }),
+    // packages list only their own details; which flights and stays belong to one is recorded on those flights and stays (package_id)
+    packages: buildPackages().map((p) => ({ id: p.id, ...Object.fromEntries(PKG_COLS.map((c) => [c, p[c]])), transfers: p.transfers.map(({ id, ...t }) => t) })),
   };
 }
 
 function importAll(data, mode) {
-  if (!data || typeof data !== 'object' || !Array.isArray(data.flights)) {
-    throw new HttpError(400, 'This does not look like a FlightLog export (no "flights" list).');
+  // A file can hold flights, stays, packages, or any mix of them (for example just a list of stays from another app).
+  if (!data || typeof data !== 'object' || !['flights', 'stays', 'packages'].some((k) => Array.isArray(data[k]))) {
+    throw new HttpError(400, 'This does not look like a FlightLog file (no "flights", "stays" or "packages" list).');
   }
+  const hasFlights = Array.isArray(data.flights), hasStays = Array.isArray(data.stays), hasPackages = Array.isArray(data.packages);
   const companions = Array.isArray(data.companions) ? data.companions : [];
   const airports = Array.isArray(data.airports) ? data.airports : [];
   let imported = 0;
+  let importedStays = 0;
+  let importedPackages = 0;
   const skipped = [];
   tx(() => {
+    // "Replace" only clears the kinds of data the file actually contains, so a file of stays never wipes your flights.
     if (mode === 'replace') {
-      db.prepare('DELETE FROM flights WHERE user_id = ?').run(CU.id);
-      db.prepare('DELETE FROM travel_companions WHERE user_id = ?').run(CU.id);
+      if (hasPackages) {
+        db.prepare('DELETE FROM package_transfers WHERE package_id IN (SELECT id FROM packages WHERE user_id = ?)').run(CU.id);
+        db.prepare('DELETE FROM packages WHERE user_id = ?').run(CU.id);
+        db.prepare('UPDATE flights SET package_id = NULL WHERE user_id = ?').run(CU.id);
+        db.prepare('UPDATE stays SET package_id = NULL WHERE user_id = ?').run(CU.id);
+      }
+      if (hasFlights) {
+        db.prepare('DELETE FROM flights WHERE user_id = ?').run(CU.id);
+        db.prepare('DELETE FROM travel_companions WHERE user_id = ?').run(CU.id);
+      }
+      if (hasStays) db.prepare('DELETE FROM stays WHERE user_id = ?').run(CU.id);
     }
     const insAirport = db.prepare('INSERT OR IGNORE INTO airports (iata, icao, name, city, country, lat, lon, tz) VALUES (?,?,?,?,?,?,?,?)');
     for (const a of airports) {
@@ -394,12 +706,49 @@ function importAll(data, mode) {
     const owner = (table, id) => { const r = db.prepare(`SELECT user_id FROM ${table} WHERE id = ?`).get(id); return r ? r.user_id : undefined; };
     const freeId = (table, id) => { const o = owner(table, id); return o === undefined || o === CU.id ? id : crypto.randomUUID(); };
     const companionMap = new Map();
-    const insCompanion = db.prepare('INSERT OR IGNORE INTO travel_companions (id, name, relationship, user_id) VALUES (?,?,?,?)');
+    const insCompanion = db.prepare('INSERT OR IGNORE INTO travel_companions (id, name, relationship, date_of_birth, user_id) VALUES (?,?,?,?,?)');
     for (const c of companions) {
       if (c && c.id && c.name) {
         const id = freeId('travel_companions', String(c.id));
         companionMap.set(String(c.id), id);
-        insCompanion.run(id, String(c.name).slice(0, 100), str(c.relationship, 60), CU.id);
+        insCompanion.run(id, String(c.name).slice(0, 100), str(c.relationship, 60), core.cleanDob(c.date_of_birth) || null, CU.id);
+      }
+    }
+    const packageMap = new Map();
+    // one stay from a file; `forcePkg` links it to the package it was nested in
+    const importStay = (raw, forcePkg) => {
+      const want = raw && raw.id ? String(raw.id).slice(0, 64) : crypto.randomUUID();
+      const o = owner('stays', want);
+      let stayId = want;
+      const remap = (g) => companionMap.get(g) || g;
+      if (o === CU.id) { try { writeStay(want, raw, remap); } catch (e) { if (e instanceof HttpError && /photo/i.test(e.message)) writeStay(want, { ...raw, image_data: undefined }, remap); else throw e; } }
+      else {
+        const vals = stayValues(raw, remap);
+        const id = o === undefined ? want : crypto.randomUUID();
+        stayId = id;
+        db.prepare(`INSERT INTO stays (id, user_id, ${STAY_COLS.join(', ')}) VALUES (?,?,${STAY_COLS.map(() => '?').join(',')})`).run(id, CU.id, ...vals);
+        try { applyStayImage(id, raw, Object.fromEntries(STAY_COLS.map((c, i) => [c, vals[i]]))); } catch (_) { /* a damaged photo in a backup is skipped, the stay still imports */ }
+      }
+      db.prepare('UPDATE stays SET package_id = ? WHERE id = ? AND user_id = ?').run(forcePkg || (raw.package_id && packageMap.get(String(raw.package_id))) || null, stayId, CU.id);
+      return stayId;
+    };
+    for (const raw of Array.isArray(data.packages) ? data.packages : []) {
+      try {
+        if (!raw || typeof raw !== 'object') continue;
+        const rawId = raw.id ? String(raw.id).slice(0, 64) : crypto.randomUUID();
+        const p = cleanPackage({ ...raw, trip_keys: [], stay_ids: [] });
+        const id = freeId('packages', rawId);
+        if (owner('packages', id) === CU.id) db.prepare(`UPDATE packages SET ${PKG_COLS.map((c) => c + ' = ?').join(', ')} WHERE id = ? AND user_id = ?`).run(...PKG_COLS.map((c) => p[c]), id, CU.id);
+        else db.prepare(`INSERT INTO packages (id, user_id, ${PKG_COLS.join(', ')}) VALUES (?,?,${PKG_COLS.map(() => '?').join(',')})`).run(id, CU.id, ...PKG_COLS.map((c) => p[c]));
+        storeTransfers(id, p.transfers);
+        packageMap.set(rawId, id);
+        importedPackages += 1;
+        // a package in a file can carry its own stays: they are added and linked to it
+        for (const st of Array.isArray(raw.stays) ? raw.stays : []) {
+          try { importStay(st, id); importedStays += 1; } catch (e) { skipped.push(`stay ${st && st.name ? st.name : '?'} (in package ${raw.name || '?'}): ${e.message}`); }
+        }
+      } catch (e) {
+        skipped.push(`package ${raw && raw.name ? raw.name : '?'}: ${e.message}`);
       }
     }
     const upsert = db.prepare(`INSERT INTO flights (id, date, airline, flight_number, aircraft_type, seat_class, seat_number,
@@ -413,7 +762,7 @@ function importAll(data, mode) {
         actual_departure_time=excluded.actual_departure_time, actual_arrival_time=excluded.actual_arrival_time,
         delay_reason=excluded.delay_reason, aircraft_registration=excluded.aircraft_registration, price=excluded.price, trip_id=excluded.trip_id, direction=excluded.direction, leg_order=excluded.leg_order WHERE flights.user_id = excluded.user_id`);
     const link = db.prepare('INSERT OR IGNORE INTO flight_companions (flight_id, companion_id) SELECT ?, id FROM travel_companions WHERE id = ? AND user_id = ?');
-    for (const raw of data.flights) {
+    for (const raw of hasFlights ? data.flights : []) {
       try {
         const rawDate = raw && raw.date ? String(raw.date).slice(0, 10) : '';
         const f = cleanFlight({ ...raw, date: rawDate });
@@ -426,12 +775,16 @@ function importAll(data, mode) {
           f.from_iata, f.to_iata, distance, f.departure_time, f.arrival_time,
           f.actual_departure_time, f.actual_arrival_time, f.delay_reason, f.aircraft_registration, f.price,
           raw.trip_id ? String(raw.trip_id).slice(0, 64) : null, raw.direction === 'return' ? 'return' : 'outbound', Number.isInteger(raw.leg_order) ? raw.leg_order : 0, CU.id);
+        db.prepare('UPDATE flights SET package_id = ? WHERE id = ? AND user_id = ?').run(raw.package_id && packageMap.get(String(raw.package_id)) || null, id, CU.id);
         db.prepare('DELETE FROM flight_companions WHERE flight_id = ?').run(id);
         for (const cid of Array.isArray(raw.companion_ids) ? raw.companion_ids : []) link.run(id, companionMap.get(String(cid)) || String(cid), CU.id);
         imported += 1;
       } catch (e) {
         skipped.push(`${raw && raw.date ? raw.date : '?'} ${raw && raw.from_iata ? raw.from_iata : ''}-${raw && raw.to_iata ? raw.to_iata : ''}: ${e.message}`);
       }
+    }
+    for (const raw of hasStays ? data.stays : []) {
+      try { importStay(raw); importedStays += 1; } catch (e) { skipped.push(`stay ${raw && raw.name ? raw.name : '?'}: ${e.message}`); }
     }
     if (data.settings && typeof data.settings === 'object') {
       if (['km', 'mi'].includes(data.settings.distance_unit)) {
@@ -443,7 +796,7 @@ function importAll(data, mode) {
     }
   });
   countryCache = null;
-  return { imported, skipped };
+  return { imported, imported_stays: importedStays, imported_packages: importedPackages, skipped };
 }
 
 /* ------------------------------------------------------------------ router */
@@ -468,6 +821,40 @@ function handleApi(method, pathname, query, body) {
     }
     if (method === 'PUT') { writeFlight(id, body || {}); return [200, { id }]; }
     if (method === 'DELETE') { db.prepare('DELETE FROM flights WHERE id = ? AND user_id = ?').run(id, CU.id); return [204, null]; }
+    throw new HttpError(405, 'Method not allowed');
+  }
+
+  if (pathname === '/api/stays') {
+    if (method === 'GET') return [200, { stays: listStays() }];
+    if (method === 'POST') return [201, { id: writeStay(null, body) }];
+    throw new HttpError(405, 'Method not allowed');
+  }
+
+  m = pathname.match(/^\/api\/stays\/([^/]+)$/);
+  if (m) {
+    const id = decodeURIComponent(m[1]);
+    const row = stayRow(id);
+    if (!row) throw new HttpError(404, 'Stay not found');
+    if (method === 'GET') return [200, row];
+    if (method === 'PUT') { writeStay(id, body); return [200, { id }]; }
+    if (method === 'DELETE') { db.prepare('DELETE FROM stays WHERE id = ? AND user_id = ?').run(id, CU.id); return [204, null]; }
+    throw new HttpError(405, 'Method not allowed');
+  }
+
+  if (pathname === '/api/packages') {
+    if (method === 'GET') return [200, { packages: buildPackages() }];
+    if (method === 'POST') return [201, { id: writePackage(null, body) }];
+    throw new HttpError(405, 'Method not allowed');
+  }
+
+  m = pathname.match(/^\/api\/packages\/([^/]+)$/);
+  if (m) {
+    const id = decodeURIComponent(m[1]);
+    const row = packageById(id);
+    if (!row) throw new HttpError(404, 'Package not found');
+    if (method === 'GET') return [200, row];
+    if (method === 'PUT') { writePackage(id, body); return [200, { id }]; }
+    if (method === 'DELETE') { deletePackage(id); return [204, null]; }
     throw new HttpError(405, 'Method not allowed');
   }
 
@@ -516,15 +903,17 @@ function handleApi(method, pathname, query, body) {
 
   if (pathname === '/api/companions') {
     if (method === 'GET') {
-      return [200, { companions: db.prepare('SELECT id, name, relationship FROM travel_companions WHERE user_id = ? ORDER BY name').all(CU.id).map((r) => ({ ...r })) }];
+      return [200, { companions: db.prepare('SELECT id, name, relationship, date_of_birth FROM travel_companions WHERE user_id = ? ORDER BY name').all(CU.id).map((r) => ({ ...r })) }];
     }
     if (method === 'POST') {
       const name = str((body || {}).name, 100);
       if (!name) throw new HttpError(400, 'name is required');
       const id = crypto.randomUUID();
       const relationship = str((body || {}).relationship, 60);
-      db.prepare('INSERT INTO travel_companions (id, name, relationship, user_id) VALUES (?,?,?,?)').run(id, name, relationship, CU.id);
-      return [201, { id, name, relationship }];
+      const date_of_birth = core.cleanDob((body || {}).date_of_birth);
+      if (date_of_birth === undefined) throw new HttpError(400, 'date_of_birth must be a valid past date (YYYY-MM-DD)');
+      db.prepare('INSERT INTO travel_companions (id, name, relationship, date_of_birth, user_id) VALUES (?,?,?,?,?)').run(id, name, relationship, date_of_birth, CU.id);
+      return [201, { id, name, relationship, date_of_birth }];
     }
     throw new HttpError(405, 'Method not allowed');
   }
@@ -532,14 +921,19 @@ function handleApi(method, pathname, query, body) {
   m = pathname.match(/^\/api\/companions\/([^/]+)$/);
   if (m) {
     const id = decodeURIComponent(m[1]);
-    const row = db.prepare('SELECT id, name, relationship FROM travel_companions WHERE id = ? AND user_id = ?').get(id, CU.id);
+    const row = db.prepare('SELECT id, name, relationship, date_of_birth FROM travel_companions WHERE id = ? AND user_id = ?').get(id, CU.id);
     if (!row) throw new HttpError(404, 'Companion not found');
     if (method === 'DELETE') { db.prepare('DELETE FROM travel_companions WHERE id = ? AND user_id = ?').run(id, CU.id); return [204, null]; }
     if (method === 'PUT') {
       const name = str((body || {}).name, 100) || row.name;
       const relationship = 'relationship' in (body || {}) ? str(body.relationship, 60) : row.relationship;
-      db.prepare('UPDATE travel_companions SET name = ?, relationship = ? WHERE id = ? AND user_id = ?').run(name, relationship, id, CU.id);
-      return [200, { id, name, relationship }];
+      let date_of_birth = row.date_of_birth || null;
+      if ('date_of_birth' in (body || {})) {
+        date_of_birth = core.cleanDob(body.date_of_birth);
+        if (date_of_birth === undefined) throw new HttpError(400, 'date_of_birth must be a valid past date (YYYY-MM-DD)');
+      }
+      db.prepare('UPDATE travel_companions SET name = ?, relationship = ?, date_of_birth = ? WHERE id = ? AND user_id = ?').run(name, relationship, date_of_birth, id, CU.id);
+      return [200, { id, name, relationship, date_of_birth }];
     }
     throw new HttpError(405, 'Method not allowed');
   }
@@ -795,6 +1189,24 @@ const server = http.createServer(async (req, res) => {
       if (!user) return send(res, 401, { error: 'Please sign in.' });
       CU = user;
       let out;
+      const im = /^\/api\/stays\/([^/]+)\/image$/.exec(pathname);
+      if (im && (method === 'GET' || method === 'HEAD')) {
+        const row = db.prepare('SELECT image_data FROM stays WHERE id = ? AND user_id = ?').get(decodeURIComponent(im[1]), user.id);
+        if (!row || !row.image_data) return send(res, 404, { error: 'No photo' });
+        const dm = /^data:(image\/[a-z]+);base64,(.+)$/.exec(row.image_data);
+        if (!dm) return send(res, 404, { error: 'No photo' });
+        const type = dm[1];
+        const buf = Buffer.from(dm[2], 'base64');
+        const etag = '"' + crypto.createHash('sha1').update(buf).digest('hex').slice(0, 20) + '"';
+        const h = { 'Content-Type': type, 'Content-Length': buf.length, 'Cache-Control': 'private, no-cache', ETag: etag, 'X-Content-Type-Options': 'nosniff' };
+        if (req.headers['if-none-match'] === etag) { res.writeHead(304, h); return res.end(); }
+        res.writeHead(200, h);
+        return res.end(method === 'HEAD' ? undefined : buf);
+      }
+      if (pathname === '/api/geocode' && method === 'GET') {
+        CU = null;
+        return send(res, 200, await geocode(url.searchParams.get('q')));
+      }
       try { out = handleApi(method, pathname, url.searchParams, body); } finally { CU = null; }
       const [status, data, headers] = out;
       return send(res, status, data, headers || {});

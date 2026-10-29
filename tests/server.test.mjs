@@ -2,6 +2,7 @@
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -12,6 +13,8 @@ const PORT = 3900 + Math.floor(Math.random() * 90);
 const BASE = `http://127.0.0.1:${PORT}`;
 let proc;
 let dataDir;
+let geoServer;
+let geoCalls = 0;
 
 async function waitUp() {
   for (let i = 0; i < 50; i++) {
@@ -32,9 +35,21 @@ const callAs = async (ck, method, path, body) => {
 const call = (method, path, body) => callAs(cookie, method, path, body);
 
 before(async () => {
+  // A stand-in for the address search service (Nominatim), so the tests never touch the internet.
+  geoServer = createServer((req, res) => {
+    geoCalls += 1;
+    const q = new URL(req.url, 'http://x').searchParams.get('q') || '';
+    res.setHeader('Content-Type', 'application/json');
+    if (/boom/i.test(q)) { res.statusCode = 500; return res.end('{}'); }
+    res.end(JSON.stringify(/linden/i.test(q) ? [
+      { display_name: 'The Linden Row Hotel, 48, Linden Row, Manhattan, New York, 10014, United States', name: 'The Linden Row Hotel', lat: '40.7425', lon: '-74.0061', address: { house_number: '48', road: 'Linden Row', city: 'New York', postcode: '10014', country: 'United States' } },
+      { display_name: 'Nowhere', lat: 'abc', lon: 'x' },
+    ] : []));
+  });
+  await new Promise((r) => geoServer.listen(0, '127.0.0.1', r));
   dataDir = mkdtempSync(join(tmpdir(), 'fv-test-'));
   proc = spawn(process.execPath, ['--disable-warning=ExperimentalWarning', join(root, 'server/index.js')], {
-    env: { ...process.env, PORT: String(PORT), DATA_DIR: dataDir },
+    env: { ...process.env, PORT: String(PORT), DATA_DIR: dataDir, FL_GEOCODER_URL: `http://127.0.0.1:${geoServer.address().port}/search` },
     stdio: 'ignore',
   });
   await waitUp();
@@ -42,7 +57,7 @@ before(async () => {
   assert.equal(r.status, 201);
   cookie = r.cookie;
 });
-after(() => { proc.kill(); rmSync(dataDir, { recursive: true, force: true }); });
+after(() => { proc.kill(); geoServer.close(); rmSync(dataDir, { recursive: true, force: true }); });
 
 test('airport search finds by code and name', async () => {
   const a = await call('GET', '/api/airports?q=LHR');
@@ -374,4 +389,338 @@ test('each account only sees its own flights, companions and settings', async ()
 test('request bodies must be JSON', async () => {
   const res = await fetch(BASE + '/api/auth/login', { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: '{"username":"tester","password":"correct-horse"}' });
   assert.equal(res.status, 415);
+});
+
+test('stays: CRUD, validation, per-account privacy and export/import', async () => {
+  const bad = await call('POST', '/api/stays', { name: 'X', check_in: '2026-05-05', check_out: '2026-05-05' });
+  assert.equal(bad.status, 400);
+  assert.equal((await call('POST', '/api/stays', { name: 'No dates' })).status, 400);
+  assert.equal((await call('POST', '/api/stays', { name: 'Bad rating', check_in: '2026-05-01', check_out: '2026-05-02', rating: 11 })).status, 400);
+
+  const made = await call('POST', '/api/stays', {
+    name: 'Hotel Test', city: 'Lisbon', country: 'Portugal', stay_type: 'Hotel', stars: 4, rating: 8.64,
+    check_in: '2026-05-01', check_out: '2026-05-04', room_type: 'Double', guests: 2, rooms: 1, price: '312.50', notes: 'Nice',
+  });
+  assert.equal(made.status, 201);
+  const id = made.data.id;
+  await call('POST', '/api/stays', { name: 'Older', check_in: '2025-01-01', check_out: '2025-01-02' });
+
+  const list = await call('GET', '/api/stays');
+  assert.equal(list.data.stays.length, 2);
+  assert.equal(list.data.stays[0].name, 'Hotel Test', 'newest check-in first');
+  assert.equal(list.data.stays[0].rating, 8.6);
+  assert.equal(list.data.stays[0].price, 312.5);
+  assert.equal(list.data.stays[1].stay_type, 'Hotel', 'type defaults to Hotel');
+
+  assert.equal((await call('PUT', '/api/stays/' + id, { name: 'Hotel Test 2', check_in: '2026-05-01', check_out: '2026-05-05' })).status, 200);
+  assert.equal((await call('GET', '/api/stays/' + id)).data.name, 'Hotel Test 2');
+
+  // another account cannot see, change or delete it
+  const other = await callAs('', 'POST', '/api/auth/signup', { username: 'someone-else', password: 'another-pass-1', distance_unit: 'km', home_country: 'France' });
+  assert.equal(other.status, 201);
+  assert.equal((await callAs(other.cookie, 'GET', '/api/stays')).data.stays.length, 0);
+  assert.equal((await callAs(other.cookie, 'GET', '/api/stays/' + id)).status, 404);
+  assert.equal((await callAs(other.cookie, 'DELETE', '/api/stays/' + id)).status, 404);
+
+  // export carries stays; importing into the other account gives it its own copies
+  const exp = (await call('GET', '/api/export')).data;
+  assert.equal(exp.stays.length, 2);
+  const imp = await callAs(other.cookie, 'POST', '/api/import?mode=merge', exp);
+  assert.equal(imp.status, 200);
+  assert.equal(imp.data.imported_stays, 2);
+  const theirs = (await callAs(other.cookie, 'GET', '/api/stays')).data.stays;
+  assert.equal(theirs.length, 2);
+  assert.ok(theirs.every((s) => s.id !== id), 'imported rows get fresh ids when the id belongs to someone else');
+  assert.equal((await call('GET', '/api/stays')).data.stays.length, 2, 'original account untouched');
+
+  assert.equal((await call('DELETE', '/api/stays/' + id)).status, 204);
+  assert.equal((await call('GET', '/api/stays')).data.stays.length, 1);
+});
+
+test('address search: needs sign-in, returns tidy results, caches and copes with failures', async () => {
+  assert.equal((await callAs('', 'GET', '/api/geocode?q=linden+row')).status, 401);
+  assert.deepEqual((await call('GET', '/api/geocode?q=li')).data.results, [], 'short searches are not sent on');
+  const before = geoCalls;
+  const r = await call('GET', '/api/geocode?q=Linden+Row+New+York');
+  assert.equal(r.status, 200);
+  assert.equal(r.data.results.length, 1, 'results without usable coordinates are dropped');
+  assert.deepEqual(r.data.results[0], {
+    label: 'The Linden Row Hotel, 48, Linden Row, Manhattan, New York, 10014, United States', name: 'The Linden Row Hotel',
+    address: '48 Linden Row, New York, 10014', city: 'New York', country: 'United States', lat: 40.7425, lon: -74.0061,
+  });
+  await call('GET', '/api/geocode?q=linden+row+new+york');
+  assert.equal(geoCalls - before, 1, 'the same search is answered from the cache');
+  assert.equal((await call('GET', '/api/geocode?q=boom+boom')).status, 502);
+});
+
+test('stays: map pin, rooms and guests', async () => {
+  const alex = (await call('POST', '/api/companions', { name: 'Alex', relationship: 'Partner' })).data.id;
+  const sam = (await call('POST', '/api/companions', { name: 'Sam' })).data.id;
+  const base = { name: 'Room Test', check_in: '2026-08-01', check_out: '2026-08-03', address: '48 Linden Row, New York', lat: 40.7425, lon: -74.0061 };
+
+  // no rooms given: one room with "me" in it
+  const plain = (await call('GET', '/api/stays/' + (await call('POST', '/api/stays', base)).data.id)).data;
+  assert.deepEqual(plain.room_list, [{ room_type: null, guests: ['me'] }]);
+  assert.equal(plain.lat, 40.7425);
+  assert.equal(plain.guests, 1);
+  assert.equal(plain.rooms, 1);
+
+  // "me" is always first in room 1; duplicates, strangers and unknown ids are removed
+  const made = await call('POST', '/api/stays', { ...base, name: 'Rooms', room_list: [
+    { room_type: 'Double room', guests: [alex, 'me'] },
+    { room_type: 'Single room', guests: [alex, sam, 'me', 'not-a-companion'] },
+  ] });
+  const got = (await call('GET', '/api/stays/' + made.data.id)).data;
+  assert.deepEqual(got.room_list, [{ room_type: 'Double room', guests: ['me', alex] }, { room_type: 'Single room', guests: [sam] }]);
+  assert.equal(got.rooms, 2);
+  assert.equal(got.guests, 3);
+  assert.equal(got.room_type, 'Double room');
+
+  // half a coordinate pair is dropped; out-of-range is refused
+  assert.equal((await call('GET', '/api/stays/' + (await call('POST', '/api/stays', { ...base, name: 'Half', lon: '' })).data.id)).data.lat, null);
+  assert.equal((await call('POST', '/api/stays', { ...base, lat: 123 })).status, 400);
+
+  // removing a companion removes them from the room
+  await call('DELETE', '/api/companions/' + alex);
+  const after = (await call('GET', '/api/stays/' + made.data.id)).data;
+  assert.deepEqual(after.room_list[0].guests, ['me']);
+  assert.equal(after.guests, 2);
+
+  // an import into another account keeps the rooms, with the companion ids remapped
+  const other = await callAs('', 'POST', '/api/auth/signup', { username: 'room-importer', password: 'another-pass-2', distance_unit: 'km', home_country: 'France' });
+  const exp = (await call('GET', '/api/export')).data;
+  const imp = await callAs(other.cookie, 'POST', '/api/import?mode=merge', exp);
+  assert.equal(imp.status, 200);
+  const theirs = (await callAs(other.cookie, 'GET', '/api/companions')).data.companions;
+  const theirSam = theirs.find((c) => c.name === 'Sam');
+  assert.ok(theirSam && theirSam.id !== sam, 'companion got a new id in the other account');
+  const copy = (await callAs(other.cookie, 'GET', '/api/stays')).data.stays.find((x) => x.name === 'Rooms');
+  assert.deepEqual(copy.room_list[1].guests, [theirSam.id]);
+});
+
+test('stay photos: upload, link, replace, remove, privacy and backup', async () => {
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+  const dataUrl = 'data:image/png;base64,' + png.toString('base64');
+  const base = { name: 'Photo Hotel', check_in: '2026-10-01', check_out: '2026-10-03' };
+
+  const made = await call('POST', '/api/stays', { ...base, image_data: dataUrl });
+  assert.equal(made.status, 201);
+  const id = made.data.id;
+  const got = (await call('GET', '/api/stays/' + id)).data;
+  assert.equal(got.image_source, 'upload');
+  assert.match(got.image, new RegExp('^api/stays/' + id + '/image\\?v=\\d+$'));
+  assert.equal(got.image_data, undefined, 'the photo itself is not sent in lists or details');
+
+  const res = await fetch(BASE + '/' + got.image, { headers: { Cookie: cookie } });
+  assert.equal(res.status, 200);
+  assert.equal(res.headers.get('content-type'), 'image/png');
+  assert.deepEqual(Buffer.from(await res.arrayBuffer()), png);
+  const again = await fetch(BASE + '/' + got.image, { headers: { Cookie: cookie, 'If-None-Match': res.headers.get('etag') } });
+  assert.equal(again.status, 304);
+  assert.equal((await fetch(BASE + '/' + got.image)).status, 401, 'signed-out visitors cannot fetch it');
+  const other = await callAs('', 'POST', '/api/auth/signup', { username: 'photo-nosy', password: 'another-pass-3', distance_unit: 'km', home_country: 'France' });
+  assert.equal((await fetch(BASE + '/' + got.image, { headers: { Cookie: other.cookie } })).status, 404, 'another account cannot fetch it');
+
+  // only real JPEG, PNG or WebP files are accepted
+  assert.equal((await call('POST', '/api/stays', { ...base, image_data: 'data:image/gif;base64,R0lGODlhAQABAAAAACw=' })).status, 400);
+  assert.equal((await call('POST', '/api/stays', { ...base, image_data: 'data:text/html;base64,PGI+aGk8L2I+' })).status, 400);
+  assert.equal((await call('POST', '/api/stays', { ...base, image_data: 'data:image/png;base64,' + Buffer.from('<script>alert(1)</script>').toString('base64') })).status, 400, 'content must match the type');
+  const big = 'data:image/png;base64,' + Buffer.concat([png.subarray(0, 8), Buffer.alloc(3 * 1024 * 1024)]).toString('base64');
+  assert.equal((await call('POST', '/api/stays', { ...base, image_data: big })).status, 413);
+
+  // editing without touching the photo keeps it
+  await call('PUT', '/api/stays/' + id, { ...base, name: 'Photo Hotel 2' });
+  assert.equal((await call('GET', '/api/stays/' + id)).data.image_source, 'upload');
+
+  // it comes back in a backup and into another account
+  const exp = (await call('GET', '/api/export')).data;
+  assert.equal(exp.stays.find((x) => x.id === id).image_data, dataUrl);
+  await callAs(other.cookie, 'POST', '/api/import?mode=merge', exp);
+  const theirs = (await callAs(other.cookie, 'GET', '/api/stays')).data.stays.find((x) => x.name === 'Photo Hotel 2');
+  assert.equal(theirs.image_source, 'upload');
+  assert.equal((await fetch(BASE + '/' + theirs.image, { headers: { Cookie: other.cookie } })).status, 200);
+
+  // a link replaces the upload; a bad link is refused
+  assert.equal((await call('PUT', '/api/stays/' + id, { ...base, image_url: 'javascript:alert(1)' })).status, 400);
+  assert.equal((await call('PUT', '/api/stays/' + id, { ...base, image_url: 'https://example.com/hotel.jpg' })).status, 200);
+  const linked = (await call('GET', '/api/stays/' + id)).data;
+  assert.equal(linked.image_source, 'link');
+  assert.equal(linked.image, 'https://example.com/hotel.jpg');
+  assert.equal((await fetch(BASE + '/api/stays/' + id + '/image', { headers: { Cookie: cookie } })).status, 404, 'the upload is gone');
+
+  // and it can be removed
+  await call('PUT', '/api/stays/' + id, { ...base, clear_image_data: true });
+  assert.equal((await call('GET', '/api/stays/' + id)).data.image, null);
+});
+
+test('packages: bundle a trip and a stay with transfers, "part of a package" flags, privacy and backup', async () => {
+  const leg = (from, to, extra) => ({ from_iata: from, to_iata: to, date: '2026-05-01', airline: 'Jet2', price: '400', ...extra });
+  const trip = (await call('POST', '/api/trips', { type: 'return', legs: [leg('MAN', 'PMI', { direction: 'outbound' }), leg('PMI', 'MAN', { direction: 'return', date: '2026-05-08', price: '' })] })).data.id;
+  const stay = (await call('POST', '/api/stays', { name: 'Hotel Sol Palma', city: 'Palma', country: 'Spain', check_in: '2026-05-01', check_out: '2026-05-08', price: 700 })).data.id;
+  const loose = (await call('POST', '/api/stays', { name: 'Not in a package', check_in: '2026-06-01', check_out: '2026-06-02' })).data.id;
+
+  // validation
+  assert.equal((await call('POST', '/api/packages', { trip_keys: [trip] })).status, 400, 'needs a name');
+  assert.equal((await call('POST', '/api/packages', { name: 'Empty' })).status, 400, 'needs a trip or stay');
+  assert.equal((await call('POST', '/api/packages', { name: 'Ghost', trip_keys: ['nope'] })).status, 400);
+  assert.equal((await call('POST', '/api/packages', { name: 'Bad', stay_ids: [stay], transfers: [{ date: '2026-05-01' }] })).status, 400, 'a transfer needs a place');
+  assert.equal((await call('POST', '/api/packages', { name: 'Bad', stay_ids: [stay], transfers: [{ from_place: 'a', time: '25:99' }] })).status, 400);
+
+  const made = await call('POST', '/api/packages', {
+    name: 'Majorca week', provider: 'Jet2holidays', board: 'All inclusive', travellers: 2, price: '1,250.50', booking_ref: 'J2-123',
+    trip_keys: [trip], stay_ids: [stay],
+    transfers: [
+      { kind: 'arrival', mode: 'Coach', date: '2026-05-01', time: '12:30', from_place: 'Palma Airport', to_place: 'Hotel Sol Palma' },
+      { kind: 'departure', mode: 'Coach', date: '2026-05-08', time: '09:15', from_place: 'Hotel Sol Palma', to_place: 'Palma Airport' },
+    ],
+  });
+  assert.equal(made.status, 201);
+  const pid = made.data.id;
+  const pkg = (await call('GET', '/api/packages/' + pid)).data;
+  assert.equal(pkg.price, 1250.5);
+  assert.equal(pkg.start, '2026-05-01');
+  assert.equal(pkg.end, '2026-05-08');
+  assert.equal(pkg.nights, 7);
+  assert.equal(pkg.trips.length, 1);
+  assert.equal(pkg.trips[0].legs.length, 2);
+  assert.equal(pkg.trips[0].from.iata, 'MAN');
+  assert.equal(pkg.trips[0].to.iata, 'PMI');
+  assert.deepEqual(pkg.stays.map((s) => s.name), ['Hotel Sol Palma']);
+  assert.deepEqual(pkg.transfers.map((t) => t.kind), ['arrival', 'departure']);
+  assert.equal(pkg.place, 'Palma, Spain');
+
+  // the flights and stays still appear on their own pages, marked as part of the package
+  const flights = (await call('GET', '/api/flights')).data.flights.filter((f) => f.trip_id === trip);
+  assert.equal(flights.length, 2);
+  assert.ok(flights.every((f) => f.package_id === pid && f.package_name === 'Majorca week'));
+  const stays = (await call('GET', '/api/stays')).data.stays;
+  assert.equal(stays.find((s) => s.id === stay).package_name, 'Majorca week');
+  assert.equal(stays.find((s) => s.id === loose).package_id, null);
+  assert.equal((await call('GET', '/api/trips/' + trip)).data.package_name, 'Majorca week');
+
+  // editing a stay or a trip keeps it in the package; a new leg joins it too
+  await call('PUT', '/api/stays/' + stay, { name: 'Hotel Sol Palma', check_in: '2026-05-01', check_out: '2026-05-08', price: 650 });
+  assert.equal((await call('GET', '/api/stays/' + stay)).data.package_id, pid);
+  const t0 = (await call('GET', '/api/trips/' + trip)).data;
+  await call('PUT', '/api/trips/' + trip, { type: 'return', legs: [...t0.legs, leg('PMI', 'MAN', { direction: 'return', date: '2026-05-09' })] });
+  assert.equal((await call('GET', '/api/flights')).data.flights.filter((f) => f.package_id === pid).length, 3);
+
+  // one trip or stay cannot be in two packages
+  assert.equal((await call('POST', '/api/packages', { name: 'Again', stay_ids: [stay] })).status, 400);
+  assert.equal((await call('POST', '/api/packages', { name: 'Again', trip_keys: [trip] })).status, 400);
+
+  // edit: swap the stay, drop a transfer
+  const up = await call('PUT', '/api/packages/' + pid, { name: 'Majorca week', trip_keys: [trip], stay_ids: [loose], transfers: [{ from_place: 'A', to_place: 'B' }] });
+  assert.equal(up.status, 200);
+  const edited = (await call('GET', '/api/packages/' + pid)).data;
+  assert.deepEqual(edited.stays.map((s) => s.name), ['Not in a package']);
+  assert.equal(edited.transfers.length, 1);
+  assert.equal((await call('GET', '/api/stays/' + stay)).data.package_id, null, 'a stay taken out is free again');
+
+  // another account cannot see or use it
+  const other = await callAs('', 'POST', '/api/auth/signup', { username: 'pkg-nosy', password: 'another-pass-9', distance_unit: 'km', home_country: 'France' });
+  assert.equal((await callAs(other.cookie, 'GET', '/api/packages')).data.packages.length, 0);
+  assert.equal((await callAs(other.cookie, 'GET', '/api/packages/' + pid)).status, 404);
+  assert.equal((await callAs(other.cookie, 'PUT', '/api/packages/' + pid, { name: 'mine now', stay_ids: [] })).status, 404);
+  assert.equal((await callAs(other.cookie, 'DELETE', '/api/packages/' + pid)).status, 404);
+  assert.equal((await callAs(other.cookie, 'POST', '/api/packages', { name: 'steal', trip_keys: [trip] })).status, 400);
+
+  // backup round trip keeps the package and which flights and stays are in it
+  await call('PUT', '/api/packages/' + pid, { name: 'Majorca week', provider: 'Jet2holidays', price: 1250.5, trip_keys: [trip], stay_ids: [stay], transfers: [{ kind: 'arrival', from_place: 'Palma Airport', to_place: 'Hotel' }] });
+  const backup = (await call('GET', '/api/export')).data;
+  assert.equal(backup.packages.length, 1);
+  assert.equal(backup.packages[0].transfers.length, 1);
+  const back = await call('POST', '/api/import?mode=replace', backup);
+  assert.equal(back.status, 200);
+  assert.equal(back.data.imported_packages, 1);
+  const again = (await call('GET', '/api/packages')).data.packages;
+  assert.equal(again.length, 1);
+  assert.equal(again[0].trips.length, 1);
+  assert.equal(again[0].stays.length, 1);
+  assert.equal(again[0].transfers.length, 1);
+
+  // deleting the package keeps its flights and stays
+  assert.equal((await call('DELETE', '/api/packages/' + pid)).status, 204);
+  assert.equal((await call('GET', '/api/packages')).data.packages.length, 0);
+  assert.ok((await call('GET', '/api/flights')).data.flights.filter((f) => f.trip_id === trip).every((f) => f.package_id === null));
+  assert.equal((await call('GET', '/api/stays/' + stay)).data.package_id, null);
+});
+
+test('import: files with only stays or only packages work, and replace only touches what the file contains', async () => {
+  const other = await callAs('', 'POST', '/api/auth/signup', { username: 'import-user', password: 'another-pass-7', distance_unit: 'km', home_country: 'France' });
+  const ck = other.cookie;
+  const imp = (body, mode) => callAs(ck, 'POST', '/api/import' + (mode ? '?mode=' + mode : ''), body);
+  await callAs(ck, 'POST', '/api/trips', { type: 'oneway', legs: [{ from_iata: 'LHR', to_iata: 'AMS', date: '2025-03-01', airline: 'KLM', direction: 'outbound' }] });
+  assert.equal((await imp({ nope: true })).status, 400);
+  assert.equal((await imp({ stays: 'x' })).status, 400);
+
+  // a file of just stays, like one converted from another app
+  const hotel = (n, i, o, extra) => ({ id: 'imp-' + n, name: n, check_in: i, check_out: o, ...extra });
+  let r = await imp({ stays: [hotel('Alpha Hotel', '2025-05-01', '2025-05-03', { city: 'Rome', country: 'Italy', lat: 41.9, lon: 12.5, price: 120 }), hotel('Bad Dates', '2025-05-05', '2025-05-05')] });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.imported_stays, 1);
+  assert.equal(r.data.imported, 0);
+  assert.equal(r.data.skipped.length, 1);
+  assert.match(r.data.skipped[0], /Bad Dates/);
+  // importing it again updates rather than duplicates
+  await imp({ stays: [hotel('Alpha Hotel', '2025-05-01', '2025-05-03', { city: 'Rome', country: 'Italy' })] });
+  assert.equal((await callAs(ck, 'GET', '/api/stays')).data.stays.length, 1);
+
+  // replace with a stays-only file keeps the flights
+  r = await imp({ stays: [hotel('Beta Hotel', '2025-06-01', '2025-06-02')] }, 'replace');
+  assert.equal(r.status, 200);
+  assert.deepEqual((await callAs(ck, 'GET', '/api/stays')).data.stays.map((s) => s.name), ['Beta Hotel']);
+  assert.equal((await callAs(ck, 'GET', '/api/flights')).data.flights.length, 1);
+
+  // a package in a file can carry its own stays and transfers
+  r = await imp({ packages: [{ name: 'Rome break', provider: 'Jet2holidays', board: 'Half board', price: 640, transfers: [{ kind: 'arrival', from_place: 'Fiumicino', to_place: 'Alpha Hotel' }], stays: [hotel('Alpha Hotel', '2025-05-01', '2025-05-04')] }] });
+  assert.equal(r.status, 200);
+  assert.equal(r.data.imported_packages, 1);
+  assert.equal(r.data.imported_stays, 1);
+  const pk = (await callAs(ck, 'GET', '/api/packages')).data.packages;
+  assert.equal(pk.length, 1);
+  assert.equal(pk[0].stays[0].name, 'Alpha Hotel');
+  assert.equal(pk[0].transfers.length, 1);
+  assert.equal((await callAs(ck, 'GET', '/api/stays')).data.stays.find((s) => s.name === 'Alpha Hotel').package_name, 'Rome break');
+
+  // replace with a packages-only file swaps the packages and frees the stays, but keeps flights and stays
+  r = await imp({ packages: [{ name: 'Second', stays: [] }] }, 'replace');
+  assert.equal(r.status, 200);
+  assert.deepEqual((await callAs(ck, 'GET', '/api/packages')).data.packages.map((p) => p.name), ['Second']);
+  const left = (await callAs(ck, 'GET', '/api/stays')).data.stays;
+  assert.equal(left.length, 2);
+  assert.ok(left.every((s) => s.package_id === null));
+  assert.equal((await callAs(ck, 'GET', '/api/flights')).data.flights.length, 1);
+});
+
+test('companion date of birth: add, edit, clear, validate, export and import', async () => {
+  const add = await call('POST', '/api/companions', { name: 'Kid', relationship: 'Son', date_of_birth: '2018-04-01' });
+  assert.equal(add.status, 201);
+  assert.equal(add.data.date_of_birth, '2018-04-01');
+  assert.equal((await call('POST', '/api/companions', { name: 'Bad', date_of_birth: '2999-01-01' })).status, 400);
+  assert.equal((await call('POST', '/api/companions', { name: 'Bad2', date_of_birth: '2018-13-01' })).status, 400);
+  const noDob = await call('POST', '/api/companions', { name: 'Plain' });
+  assert.equal(noDob.data.date_of_birth, null);
+
+  assert.equal((await call('PUT', '/api/companions/' + noDob.data.id, { date_of_birth: '2025-01-15' })).data.date_of_birth, '2025-01-15');
+  assert.equal((await call('PUT', '/api/companions/' + noDob.data.id, { name: 'Plain2' })).data.date_of_birth, '2025-01-15', 'untouched when not sent');
+  assert.equal((await call('PUT', '/api/companions/' + noDob.data.id, { date_of_birth: null })).data.date_of_birth, null);
+  assert.equal((await call('PUT', '/api/companions/' + noDob.data.id, { date_of_birth: 'junk' })).status, 400);
+
+  const list = (await call('GET', '/api/companions')).data.companions;
+  assert.equal(list.find((c) => c.name === 'Kid').date_of_birth, '2018-04-01');
+
+  const exp = (await call('GET', '/api/export')).data;
+  assert.equal(exp.companions.find((c) => c.name === 'Kid').date_of_birth, '2018-04-01');
+  const flightsBody = { date: '2026-01-01', airline: 'British Airways', flight_number: 'BA1', aircraft_type: 'Airbus A350', seat_class: 'Economy', from_iata: 'LHR', to_iata: 'JFK', departure_time: '10:00', arrival_time: '13:00', companion_ids: [add.data.id] };
+  const fl = await call('POST', '/api/flights', flightsBody);
+  assert.equal(fl.status, 201);
+  const got = (await call('GET', '/api/flights')).data.flights.find((f) => f.companions.some((c) => c.id === add.data.id));
+  assert.equal(got.companions[0].date_of_birth, '2018-04-01');
+
+  const other = { flights: [], companions: [{ id: 'imp-1', name: 'Imported', relationship: 'Niece', date_of_birth: '2021-07-07' }, { id: 'imp-2', name: 'BadDob', date_of_birth: 'zzz' }] };
+  assert.equal((await call('POST', '/api/import', other)).status, 200);
+  const after = (await call('GET', '/api/companions')).data.companions;
+  assert.equal(after.find((c) => c.name === 'Imported').date_of_birth, '2021-07-07');
+  assert.equal(after.find((c) => c.name === 'BadDob').date_of_birth, null);
 });

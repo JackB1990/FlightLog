@@ -14,6 +14,7 @@ services:
       FL_PASSWORD: ${FL_PASSWORD:-}
       FL_USER: ${FL_USER:-flightlog}
       FL_SIGNUPS: ${FL_SIGNUPS:-on}
+      FL_GEOCODING: ${FL_GEOCODING:-on}
     volumes:
       - ${FL_DATA:-flightlog-data}:/data
 

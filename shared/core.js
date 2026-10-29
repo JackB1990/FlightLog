@@ -394,9 +394,168 @@
     return short || raw || String(a.city || a.iata || '');
   }
 
+  /* ---- stays ---- */
+  const STAY_TYPES = ['Hotel', 'Apartment', 'Hostel', 'Guest house', 'Resort', 'Villa', 'Other'];
+  function stayErr(msg) { const e = new Error(msg); e.status = 400; return e; }
+  const stayStr = (v, max) => { if (v === null || v === undefined) return null; const t = String(v).trim(); return t === '' ? null : t.slice(0, max); };
+  const stayDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v || '') && !isNaN(new Date(v + 'T00:00:00Z').getTime());
+  function stayNights(checkIn, checkOut) {
+    if (!stayDate(checkIn) || !stayDate(checkOut)) return 0;
+    return Math.round((Date.parse(checkOut + 'T00:00:00Z') - Date.parse(checkIn + 'T00:00:00Z')) / 86400000);
+  }
+  const ROOM_TYPES = ['Standard room', 'Single room', 'Double room', 'Twin room', 'Triple room', 'Family room', 'Suite', 'Apartment', 'Dorm bed'];
+  // Rooms: [{ room_type, guests: ['me' | companionId, ...] }]. "me" is the account holder; every stay has at least one room,
+  // and "me" is always the first guest of room 1. A guest can only be in one room.
+  function cleanRooms(list, legacy) {
+    let rooms = Array.isArray(list) ? list.slice(0, 20) : [];
+    if (!rooms.length) {
+      const n = Math.max(1, Math.min(20, Math.round(Number(legacy && legacy.rooms) || 1)));
+      rooms = Array.from({ length: n }, (_, i) => ({ room_type: i === 0 ? legacy && legacy.room_type : null, guests: [] }));
+    }
+    const seen = new Set();
+    const out = rooms.map((r) => {
+      r = r || {};
+      const guests = [];
+      for (const g of Array.isArray(r.guests) ? r.guests : []) {
+        const id = String(g == null ? '' : g).trim().slice(0, 64);
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        guests.push(id);
+      }
+      return { room_type: stayStr(r.room_type, 80), guests };
+    });
+    const first = out[0].guests.filter((g) => g !== 'me');
+    for (let i = 1; i < out.length; i++) out[i].guests = out[i].guests.filter((g) => g !== 'me');
+    out[0].guests = ['me', ...first];
+    return out;
+  }
+  // Validates a stay from the form or an import; throws an Error with status 400 when something is wrong.
+  function cleanStay(b) {
+    b = b || {};
+    const name = stayStr(b.name, 120);
+    const check_in = stayStr(b.check_in, 10);
+    const check_out = stayStr(b.check_out, 10);
+    if (!name || !check_in || !check_out) throw stayErr('name, check_in and check_out are required');
+    if (!stayDate(check_in) || !stayDate(check_out)) throw stayErr('Dates must be YYYY-MM-DD');
+    if (stayNights(check_in, check_out) < 1) throw stayErr('Check-out must be after check-in');
+    const num = (v, label, min, max, dp) => {
+      if (v === null || v === undefined || String(v).trim() === '') return null;
+      const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
+      if (!Number.isFinite(n) || n < min || n > max) throw stayErr(label + ' must be between ' + min + ' and ' + max);
+      return Math.round(n * dp) / dp;
+    };
+    const type = stayStr(b.stay_type, 30);
+    let lat = num(b.lat, 'Latitude', -90, 90, 1e6);
+    let lon = num(b.lon, 'Longitude', -180, 180, 1e6);
+    if (lat === null || lon === null) { lat = null; lon = null; }
+    const room_list = cleanRooms(b.room_list, b);
+    const image_url = stayStr(b.image_url, 500);
+    if (image_url && !/^https?:\/\/[^\s]+$/i.test(image_url)) throw stayErr('The image link must start with http:// or https://');
+    return {
+      image_url,
+      name, check_in, check_out,
+      city: stayStr(b.city, 80), country: stayStr(b.country, 80), address: stayStr(b.address, 200), lat, lon,
+      stay_type: type && STAY_TYPES.includes(type) ? type : (type ? 'Other' : 'Hotel'),
+      stars: num(b.stars, 'Stars', 0, 5, 1) || null,
+      rating: num(b.rating, 'Your rating', 0, 10, 10),
+      room_list,
+      room_type: room_list[0].room_type,
+      rooms: room_list.length,
+      guests: room_list.reduce((n, r) => n + r.guests.length, 0),
+      price: num(b.price, 'Price', 0, 10000000, 100),
+      booking_ref: stayStr(b.booking_ref, 40),
+      notes: stayStr(b.notes, 500),
+    };
+  }
+
+
+  /* ---- packages (a holiday that bundles flights, a stay and transfers) ---- */
+  const PACKAGE_BOARDS = ['Room only', 'Self catering', 'Bed & breakfast', 'Half board', 'Full board', 'All inclusive'];
+  const TRANSFER_MODES = ['Shared shuttle', 'Coach', 'Private car', 'Taxi', 'Train', 'Ferry', 'Other'];
+  const TRANSFER_KINDS = ['arrival', 'departure', 'other'];
+  function cleanTransfer(t) {
+    t = t || {};
+    const date = stayStr(t.date, 10);
+    if (date && !stayDate(date)) throw stayErr('Transfer dates must be YYYY-MM-DD');
+    const time = stayStr(t.time, 5);
+    if (time && !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) throw stayErr('Transfer times must be HH:MM');
+    const mode = stayStr(t.mode, 30);
+    const kind = stayStr(t.kind, 12);
+    const out = {
+      kind: TRANSFER_KINDS.includes(kind) ? kind : 'other',
+      mode: mode && TRANSFER_MODES.includes(mode) ? mode : (mode ? 'Other' : 'Shared shuttle'),
+      date, time,
+      from_place: stayStr(t.from_place, 100), to_place: stayStr(t.to_place, 100),
+      notes: stayStr(t.notes, 200),
+    };
+    if (!out.from_place && !out.to_place) throw stayErr('Each transfer needs a pick-up or drop-off place');
+    return out;
+  }
+  // Validates a package from the form or an import. trip_keys / stay_ids are checked against the account by the server.
+  function cleanPackage(b) {
+    b = b || {};
+    const name = stayStr(b.name, 120);
+    if (!name) throw stayErr('Please give the package a name');
+    const num = (v, label, min, max, dp) => {
+      if (v === null || v === undefined || String(v).trim() === '') return null;
+      const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
+      if (!Number.isFinite(n) || n < min || n > max) throw stayErr(label + ' must be between ' + min + ' and ' + max);
+      return Math.round(n * dp) / dp;
+    };
+    const board = stayStr(b.board, 30);
+    const ids = (v, max) => [...new Set((Array.isArray(v) ? v : []).map((x) => String(x == null ? '' : x).trim().slice(0, 64)).filter(Boolean))].slice(0, max);
+    const transfers = (Array.isArray(b.transfers) ? b.transfers : []).slice(0, 20).map(cleanTransfer);
+    const travellers = num(b.travellers, 'Travellers', 1, 50, 1);
+    return {
+      name,
+      provider: stayStr(b.provider, 80),
+      destination: stayStr(b.destination, 80),
+      country: stayStr(b.country, 80),
+      board: board && PACKAGE_BOARDS.includes(board) ? board : null,
+      travellers: travellers == null ? null : Math.round(travellers),
+      price: num(b.price, 'Price', 0, 10000000, 100),
+      booking_ref: stayStr(b.booking_ref, 40),
+      notes: stayStr(b.notes, 500),
+      trip_keys: ids(b.trip_keys, 10),
+      stay_ids: ids(b.stay_ids, 10),
+      transfers,
+    };
+  }
+
+
+  // ---- Companion age helpers ----
+  function cleanDob(v) {
+    if (v === undefined || v === null || v === '') return null;
+    const s = String(v).trim();
+    const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s);
+    if (!m) return undefined;
+    const y = +m[1], mo = +m[2], d = +m[3];
+    const dt = new Date(Date.UTC(y, mo - 1, d));
+    if (dt.getUTCFullYear() !== y || dt.getUTCMonth() !== mo - 1 || dt.getUTCDate() !== d) return undefined;
+    if (y < 1900) return undefined;
+    if (s > new Date().toISOString().slice(0, 10)) return undefined;
+    return s;
+  }
+  // Whole years old on a given day (YYYY-MM-DD). Null when there is no usable date of birth.
+  function ageOn(dob, onDate) {
+    const b = cleanDob(dob);
+    if (!b) return null;
+    const on = String(onDate || new Date().toISOString().slice(0, 10)).slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(on)) return null;
+    let age = +on.slice(0, 4) - +b.slice(0, 4);
+    if (on.slice(5) < b.slice(5)) age--;
+    return age < 0 ? null : age;
+  }
+  // infant: under 2, child: 2 to 15, adult: 16+ or no date of birth.
+  function ageGroup(dob, onDate) {
+    const a = ageOn(dob, onDate);
+    if (a === null) return 'adult';
+    return a < 2 ? 'infant' : a < 16 ? 'child' : 'adult';
+  }
+
   const api = {
     KM_TO_MI, airportName, haversineKm, aircraftManufacturer, computeStats, countryCenters,
-    validTz, estimateTz, resolveTz, localToUtc, localDateOf, legTimes, journeyTimes, tripTimes, fmtDuration,
+    cleanDob, ageOn, ageGroup, STAY_TYPES, ROOM_TYPES, cleanRooms, cleanStay, stayNights, PACKAGE_BOARDS, TRANSFER_MODES, TRANSFER_KINDS, cleanTransfer, cleanPackage, validTz, estimateTz, resolveTz, localToUtc, localDateOf, legTimes, journeyTimes, tripTimes, fmtDuration,
   };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.FLCore = api;

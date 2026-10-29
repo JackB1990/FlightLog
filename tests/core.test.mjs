@@ -107,3 +107,24 @@ test('durations format as hours and minutes', () => {
   assert.equal(core.fmtDuration(60 * 50 + 5), '2d 2h 05m');
   assert.equal(core.fmtDuration(null), '—');
 });
+
+test('companion age groups: infant under 2, child 2 to 15, adult 16+ or no date of birth', () => {
+  assert.equal(core.ageOn('2020-05-10', '2022-05-09'), 1);
+  assert.equal(core.ageOn('2020-05-10', '2022-05-10'), 2);
+  assert.equal(core.ageGroup('2020-05-10', '2022-05-09'), 'infant');
+  assert.equal(core.ageGroup('2020-05-10', '2022-05-10'), 'child');
+  assert.equal(core.ageGroup('2000-01-01', '2016-01-01'), 'adult');
+  assert.equal(core.ageGroup('2000-01-02', '2016-01-01'), 'child');
+  assert.equal(core.ageGroup(null, '2026-01-01'), 'adult');
+  assert.equal(core.ageGroup('', '2026-01-01'), 'adult');
+  assert.equal(core.ageGroup('2030-01-01', '2026-01-01'), 'adult', 'not yet born on the travel date: no usable age');
+  assert.equal(core.ageOn('2024-02-29', '2025-02-28'), 0);
+  assert.equal(core.ageOn('2024-02-29', '2025-03-01'), 1);
+});
+
+test('date of birth validation', () => {
+  assert.equal(core.cleanDob('2015-03-04'), '2015-03-04');
+  assert.equal(core.cleanDob(''), null);
+  assert.equal(core.cleanDob(null), null);
+  for (const bad of ['2015-02-30', '15-03-04', 'nope', '1800-01-01', '2999-01-01']) assert.equal(core.cleanDob(bad), undefined, bad);
+});

@@ -1,6 +1,6 @@
 {
   "name": "flightlog",
-  "version": "1.11.1",
+  "version": "1.11.2",
   "description": "Self-hosted personal flight log: flight cards, route map and statistics.",
   "private": true,
   "license": "MIT",

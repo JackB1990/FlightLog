@@ -28,7 +28,7 @@ async function makeCtx(opts = {}) {
     document: { title: '' }, location: { hash: '' },
     Event: class { constructor(type) { this.type = type; } }, CustomEvent: class { constructor(type, init) { this.type = type; this.detail = init && init.detail; } },
   });
-  for (const f of ['tests/support/mock-api.js', 'frontend/data.js']) vm.runInContext(readFileSync(join(root, f), 'utf8'), ctx);
+  for (const f of ['tests/support/mock-api.js', 'frontend/data.js', 'frontend/logos.js']) vm.runInContext(readFileSync(join(root, f), 'utf8'), ctx);
   // data.js assigns window.FL_DATA; app.js refers to the bare global
   ctx.FL_DATA = window.FL_DATA;
   vm.runInContext(readFileSync(join(root, 'frontend/app.js'), 'utf8'), ctx);

@@ -9,6 +9,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const ctx = { window: {} };
 vm.createContext(ctx);
 vm.runInContext(readFileSync(join(root, 'frontend/data.js'), 'utf8'), ctx);
+vm.runInContext(readFileSync(join(root, 'frontend/logos.js'), 'utf8'), ctx);
 const AIRLINES = ctx.window.FL_DATA.AIRLINES;
 
 test('airline list: names are unique and every entry is well formed', () => {
@@ -32,13 +33,14 @@ test('airline list: well-known airlines are unchanged and the verified additions
   assert.equal(byName.get('Hawaiian Airlines').code, 'HA');
 });
 
-test('bundled airline logos: every mapped file exists, belongs to a listed airline', async () => {
+test('bundled airline logos: one file, every logo is a PNG for a listed airline', async () => {
   const { existsSync } = await import('node:fs');
   const map = ctx.window.FL_DATA.LOCAL_LOGOS;
   assert.ok(Object.keys(map).length >= 60);
   const byName = new Map(AIRLINES.map((a) => [a.name, a]));
-  for (const [name, file] of Object.entries(map)) {
+  for (const [name, uri] of Object.entries(map)) {
     assert.ok(byName.has(name), 'unknown airline ' + name);
-    assert.ok(existsSync(join(root, 'frontend', file)), file);
+    assert.match(uri, /^data:image\/png;base64,iVBOR/, name);
   }
+  assert.equal(existsSync(join(root, 'frontend/logos/airlines')), false, 'logos are bundled in logos.js, not as separate files');
 });

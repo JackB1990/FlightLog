@@ -12,7 +12,7 @@
 #                     (that folder must be owned by user/group 568).
 services:
   flightlog:
-    image: ghcr.io/YOUR_GITHUB_USERNAME/flightlog:latest
+    image: ghcr.io/jackb1990/flightlog:latest
     container_name: flightlog
     restart: unless-stopped
     ports:

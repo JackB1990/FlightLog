@@ -670,11 +670,14 @@ function fromPhoton(json) {
   });
 }
 
+// Read from package.json; never let a missing file stop the app (or the address search) from working.
+const APP_VERSION = (() => { try { return require('../package.json').version; } catch { return 'unknown'; } })();
+
 async function geoFetch(kind, base, q) {
   const u = new URL(base);
   if (kind === 'photon') { u.searchParams.set('q', q); u.searchParams.set('limit', '6'); u.searchParams.set('lang', 'en'); }
   else { u.searchParams.set('format', 'jsonv2'); u.searchParams.set('q', q); u.searchParams.set('limit', '6'); u.searchParams.set('addressdetails', '1'); }
-  const res = await fetch(u, { headers: { 'User-Agent': `FlightLog/${require('../package.json').version} (self-hosted personal flight log)`, 'Accept-Language': 'en', Accept: 'application/json' }, signal: AbortSignal.timeout(8000) });
+  const res = await fetch(u, { headers: { 'User-Agent': `FlightLog/${APP_VERSION} (self-hosted personal flight log)`, 'Accept-Language': 'en', Accept: 'application/json' }, signal: AbortSignal.timeout(8000) });
   if (!res.ok) { const err = new Error('status ' + res.status); err.geoStatus = res.status; throw err; }
   const json = await res.json();
   return kind === 'photon' ? fromPhoton(json) : fromNominatim(json);
@@ -1258,7 +1261,7 @@ const server = http.createServer(async (req, res) => {
         if (Number(req.headers['content-length'] || 0) > 0 && !/^application\/json/i.test(String(req.headers['content-type'] || ''))) throw new HttpError(415, 'Send JSON');
         body = await readBody(req);
       }
-      if (pathname === '/api/health') return send(res, 200, { ok: true });
+      if (pathname === '/api/health') return send(res, 200, { ok: true, version: APP_VERSION });
       if (pathname.startsWith('/api/auth/')) {
         const [status, data, headers] = handleAuth(req, method, pathname, body);
         return send(res, status, data, headers || {});

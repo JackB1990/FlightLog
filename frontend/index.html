@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>FlightLog</title>
+<meta name="fl-version" content="1.15.4">
 <link rel="icon" type="image/png" href="favicon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1933,6 +1934,11 @@
               </label>
             </div>
             <template x-if="backupMsg"><p :class="backupOk ? 'form-ok' : 'form-error'" style="margin-top:10px;" x-text="backupMsg"></p></template>
+          </div>
+          <div class="form-card">
+            <h3 class="settings-section-title">About</h3>
+            <p class="form-hint" style="margin:0;">Page files: <b x-text="pageVersion || 'unknown'"></b> &middot; Server: <b x-text="serverVersion || 'unknown'"></b></p>
+            <template x-if="versionMismatch"><p class="form-error" style="margin-top:10px;">The page files and the server are different versions, so some features will not work. This usually means the files on GitHub are a mix of old and new: upload the whole project again, wait for the green build, then re-pull the image in Portainer.</p></template>
           </div>
         </div>
       </template>

@@ -1705,7 +1705,11 @@ function settingsView() {
     username: '',
     unit: 'km', homeCountry: '', countries: [], saved: false,
     replaceOnImport: false, backupMsg: '', backupOk: true,
+    pageVersion: '', serverVersion: '',
+    get versionMismatch() { return !!(this.pageVersion && this.serverVersion && this.serverVersion !== 'demo' && this.pageVersion !== this.serverVersion); },
     async load() {
+      try { const m = document.querySelector && document.querySelector('meta[name="fl-version"]'); this.pageVersion = m ? m.content : ''; } catch { /* no page */ }
+      apiJson('api/health').then((h) => { this.serverVersion = h.version || 'demo'; }).catch(() => { this.serverVersion = ''; });
       const [s, c, st] = await Promise.all([apiJson('api/account/settings'), apiJson('api/countries'), apiJson('api/auth/status')]);
       this.username = st.user ? st.user.username : '';
       this.unit = s.distance_unit || 'km';

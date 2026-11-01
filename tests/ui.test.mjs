@@ -1258,3 +1258,17 @@ test('package details photo is 6:4 and stay details photo is unchanged', async (
   assert.match(css, /\n\.detail-hero \{[^}]*height: 220px/);
   assert.equal((html.match(/detail-hero pkg-hero/g) || []).length, 1);
 });
+
+test('about card: page and server versions, mismatch warning, Dockerfile ships package.json', async () => {
+  const { readFileSync } = await import('node:fs');
+  const read = (p) => readFileSync(new URL('../' + p, import.meta.url), 'utf8');
+  const pkg = JSON.parse(read('package.json'));
+  assert.ok(read('frontend/index.html').includes('<meta name="fl-version" content="' + pkg.version + '">'), 'page version matches package.json');
+  assert.match(read('Dockerfile'), /COPY package\.json \.\/package\.json/);
+  const ctx = await makeCtx();
+  const s = vm.runInContext('settingsView()', ctx);
+  s.pageVersion = '1.15.4'; s.serverVersion = '1.14.0';
+  assert.equal(s.versionMismatch, true);
+  s.serverVersion = '1.15.4';
+  assert.equal(s.versionMismatch, false);
+});

@@ -20,6 +20,7 @@ ENV NODE_ENV=production \
     DATA_DIR=/data
 WORKDIR /app
 
+COPY package.json ./package.json
 COPY shared ./shared
 COPY server/index.js ./server/index.js
 COPY server/data/airports-fallback.json ./server/data/airports-fallback.json

@@ -306,7 +306,7 @@
       const u = currentUser();
       return [200, { authenticated: !!u, user: u ? publicUser(u) : null, signups: true, hasUsers: true, legacyData: false }];
     }
-    if (pathname === '/api/auth/logout') { db.session = null; state = null; persist(); return [200, { ok: true }]; }
+    if (pathname === '/api/auth/logout') { db.session = null; state = null; persist(); return [200, { ok: true, version: 'demo' }]; }
     if (pathname === '/api/auth/login') {
       const u = db.users.find((x) => x.username.toLowerCase() === String(b.username || '').trim().toLowerCase());
       if (!u || u.password !== String(b.password || '')) throw new HttpError(401, 'Incorrect username or password.');

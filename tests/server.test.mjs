@@ -780,3 +780,8 @@ test('stay brand is saved, trimmed, returned, exported and re-imported', async (
   assert.equal((await call('POST', '/api/import', exp)).status, 200);
   assert.equal((await call('GET', '/api/stays/' + made.data.id)).data.brand, 'Premier Inn');
 });
+
+test('health reports the app version', async () => {
+  const j = await (await fetch(BASE + '/api/health')).json();
+  assert.equal(j.version, JSON.parse((await import('node:fs')).readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version);
+});

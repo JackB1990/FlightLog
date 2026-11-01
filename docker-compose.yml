@@ -1,0 +1,35 @@
+# FlightLog: paste this whole file into Portainer > Stacks > Add stack > Web editor.
+#
+# 1. Replace YOUR_GITHUB_USERNAME below (lowercase) with your GitHub username.
+# 2. In Portainer's "Environment variables" section you can (optionally) set:
+#      FL_PASSWORD  - optional: creates/keeps an account for FL_USER with this password (handy for
+#                     upgrades from older versions). You can also just create an account on the login page.
+#      FL_SIGNUPS   - set to off once your accounts exist, to stop anyone else creating one (default on)
+#      FL_GEOCODING - set to off to disable the address search on the Stays form (default on)
+#      FL_PORT      - port to open on your NAS (default 8420)
+#      FL_DATA      - where to keep the database. Leave unset to use a Docker volume,
+#                     or set a dataset path such as /mnt/tank/apps/flightlog
+#                     (that folder must be owned by user/group 568).
+services:
+  flightlog:
+    image: ghcr.io/YOUR_GITHUB_USERNAME/flightlog:latest
+    container_name: flightlog
+    restart: unless-stopped
+    ports:
+      - "${FL_PORT:-8420}:3000"
+    environment:
+      TZ: Europe/London
+      FL_PASSWORD: ${FL_PASSWORD:-}
+      FL_USER: ${FL_USER:-flightlog}
+      FL_SIGNUPS: ${FL_SIGNUPS:-on}
+      FL_GEOCODING: ${FL_GEOCODING:-on}
+    # If the address search on the Stays form says it cannot be reached (DNS problems on some NAS setups),
+    # remove the # from the next three lines to give the container public DNS servers.
+    # dns:
+    #   - 1.1.1.1
+    #   - 8.8.8.8
+    volumes:
+      - ${FL_DATA:-flightlog-data}:/data
+
+volumes:
+  flightlog-data:

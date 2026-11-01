@@ -40,7 +40,7 @@ A self-hosted personal travel log for the flights you have taken, the places you
 Already have Docker? The short version:
 
 ```bash
-curl -O https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/flightlog/main/docker-compose.yml
+curl -O https://raw.githubusercontent.com/jackb1990/flightlog/main/docker-compose.yml
 docker compose up -d
 ```
 
@@ -48,11 +48,11 @@ Open `http://localhost:8420`, choose **Create account**, pick your home country 
 
 ## 🤝 Contributing
 
-Bug reports and ideas are welcome: please open an [issue](https://github.com/YOUR_GITHUB_USERNAME/flightlog/issues). To work on the code, see [Project layout](#project-layout). Run the tests with `npm test` (Node 22.5 or newer) before opening a pull request.
+Bug reports and ideas are welcome: please open an [issue](https://github.com/jackb1990/flightlog/issues). To work on the code, see [Project layout](#project-layout). Run the tests with `npm test` (Node 22.5 or newer) before opening a pull request.
 
 ## 🛠️ Build Status
 
-[![Test and publish image](https://github.com/YOUR_GITHUB_USERNAME/flightlog/actions/workflows/docker.yml/badge.svg)](https://github.com/YOUR_GITHUB_USERNAME/flightlog/actions/workflows/docker.yml)
+[![Test and publish image](https://github.com/jackb1990/flightlog/actions/workflows/docker.yml/badge.svg)](https://github.com/jackb1990/flightlog/actions/workflows/docker.yml)
 
 ---
 
@@ -62,7 +62,7 @@ Use the **One way / Return** toggle when logging. A one-way flight is stored as 
 
 ## Deploying
 
-FlightLog is published as a ready-made container image, `ghcr.io/YOUR_GITHUB_USERNAME/flightlog:latest`, built automatically from this repository. You do not need to build anything or copy any source code: you only need a machine that can run Docker (a home server, NAS, mini PC or a VPS) and one small compose file.
+FlightLog is published as a ready-made container image, `ghcr.io/jackb1990/flightlog:latest`, built automatically from this repository. You do not need to build anything or copy any source code: you only need a machine that can run Docker (a home server, NAS, mini PC or a VPS) and one small compose file.
 
 **What you need**
 
@@ -78,7 +78,7 @@ Pick the method that suits your setup. All three run the same image and keep you
 
    ```bash
    mkdir flightlog && cd flightlog
-   curl -O https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/flightlog/main/docker-compose.yml
+   curl -O https://raw.githubusercontent.com/jackb1990/flightlog/main/docker-compose.yml
    ```
 
 2. (Optional) Create a file called `.env` next to it to change any [settings](#configuration), for example:

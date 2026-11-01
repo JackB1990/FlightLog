@@ -450,7 +450,9 @@ test('address search: needs sign-in, returns tidy results, caches and copes with
   });
   await call('GET', '/api/geocode?q=linden+row+new+york');
   assert.equal(geoCalls - before, 1, 'the same search is answered from the cache');
-  assert.equal((await call('GET', '/api/geocode?q=boom+boom')).status, 502);
+  const bad = await call('GET', '/api/geocode?q=boom+boom');
+  assert.equal(bad.status, 502);
+  assert.match(bad.data.error || bad.data.message || JSON.stringify(bad.data), /status 500/, 'the reason for the failure is shown');
 });
 
 test('stays: map pin, rooms and guests', async () => {
@@ -632,7 +634,7 @@ test('packages: bundle a trip and a stay with transfers, "part of a package" fla
   assert.equal(backup.packages[0].transfers.length, 1);
   const back = await call('POST', '/api/import?mode=replace', backup);
   assert.equal(back.status, 200);
-  assert.equal(back.data.imported_packages, 1);
+  assert.equal(back.data.imported_packages, 1, JSON.stringify(back.data));
   const again = (await call('GET', '/api/packages')).data.packages;
   assert.equal(again.length, 1);
   assert.equal(again[0].trips.length, 1);
@@ -723,4 +725,58 @@ test('companion date of birth: add, edit, clear, validate, export and import', a
   const after = (await call('GET', '/api/companions')).data.companions;
   assert.equal(after.find((c) => c.name === 'Imported').date_of_birth, '2021-07-07');
   assert.equal(after.find((c) => c.name === 'BadDob').date_of_birth, null);
+});
+
+test('package party: name comes from the destination, travellers = you + companions, and it survives backup and companion removal', async () => {
+  const kid = (await call('POST', '/api/companions', { name: 'PartyKid', date_of_birth: '2020-01-01' })).data.id;
+  const adult = (await call('POST', '/api/companions', { name: 'PartyAdult' })).data.id;
+  const stay = (await call('POST', '/api/stays', { name: 'Party Hotel', check_in: '2026-08-01', check_out: '2026-08-08' })).data.id;
+  assert.equal((await call('POST', '/api/packages', { stay_ids: [stay] })).status, 400, 'needs a destination (or a name) to be named');
+  const made = await call('POST', '/api/packages', { destination: 'Palma Nova', country: 'Spain', stay_ids: [stay], companion_ids: [kid, adult, 'not-mine'] });
+  assert.equal(made.status, 201);
+  const pk = (await call('GET', '/api/packages/' + made.data.id)).data;
+  assert.equal(pk.name, 'Palma Nova trip');
+  assert.equal(pk.travellers, 3, 'you and two companions; ids that are not yours are ignored');
+  assert.deepEqual(pk.companion_ids.sort(), [kid, adult].sort());
+  assert.equal(pk.companions.find((c) => c.id === kid).date_of_birth, '2020-01-01');
+
+  // editing without sending the party leaves it alone
+  assert.equal((await call('PUT', '/api/packages/' + made.data.id, { name: 'Renamed', stay_ids: [stay] })).status, 200);
+  assert.equal((await call('GET', '/api/packages/' + made.data.id)).data.companion_ids.length, 2);
+
+  // backup keeps the party
+  const exp = (await call('GET', '/api/export')).data;
+  assert.equal(exp.packages.find((p) => p.name === 'Renamed').companion_ids.length, 2);
+  assert.equal((await call('POST', '/api/import', exp)).status, 200);
+  assert.equal((await call('GET', '/api/packages/' + made.data.id)).data.travellers, 3);
+
+  // removing a companion takes them out of the party
+  assert.equal((await call('DELETE', '/api/companions/' + kid)).status, 204);
+  const after = (await call('GET', '/api/packages/' + made.data.id)).data;
+  assert.deepEqual(after.companion_ids, [adult]);
+  assert.equal(after.travellers, 2);
+});
+
+test('free child place is saved, returned and kept in backups', async () => {
+  const stay = (await call('POST', '/api/stays', { name: 'Free Child Hotel', check_in: '2026-09-01', check_out: '2026-09-05' })).data.id;
+  const a = await call('POST', '/api/packages', { destination: 'Rhodes', stay_ids: [stay], free_child_place: true });
+  assert.equal(a.status, 201);
+  assert.equal((await call('GET', '/api/packages/' + a.data.id)).data.free_child_place, true);
+  const exp = (await call('GET', '/api/export')).data;
+  assert.equal(exp.packages.find((p) => p.name === 'Rhodes trip').free_child_place, true);
+  assert.equal((await call('PUT', '/api/packages/' + a.data.id, { destination: 'Rhodes', stay_ids: [stay] })).status, 200);
+  assert.equal((await call('GET', '/api/packages/' + a.data.id)).data.free_child_place, false, 'unticked when not sent');
+});
+
+test('stay brand is saved, trimmed, returned, exported and re-imported', async () => {
+  const made = await call('POST', '/api/stays', { name: 'Brand Test Inn', brand: '  Hilton  ', check_in: '2026-10-01', check_out: '2026-10-03' });
+  assert.equal(made.status, 201);
+  assert.equal((await call('GET', '/api/stays/' + made.data.id)).data.brand, 'Hilton');
+  assert.equal((await call('PUT', '/api/stays/' + made.data.id, { name: 'Brand Test Inn', check_in: '2026-10-01', check_out: '2026-10-03' })).status, 200);
+  assert.equal((await call('GET', '/api/stays/' + made.data.id)).data.brand, null, 'cleared when blank');
+  await call('PUT', '/api/stays/' + made.data.id, { name: 'Brand Test Inn', brand: 'Premier Inn', check_in: '2026-10-01', check_out: '2026-10-03' });
+  const exp = (await call('GET', '/api/export')).data;
+  assert.equal(exp.stays.find((s) => s.id === made.data.id).brand, 'Premier Inn');
+  assert.equal((await call('POST', '/api/import', exp)).status, 200);
+  assert.equal((await call('GET', '/api/stays/' + made.data.id)).data.brand, 'Premier Inn');
 });

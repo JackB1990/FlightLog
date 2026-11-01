@@ -455,6 +455,7 @@
       image_url,
       name, check_in, check_out,
       city: stayStr(b.city, 80), country: stayStr(b.country, 80), address: stayStr(b.address, 200), lat, lon,
+      brand: stayStr(b.brand, 60),
       stay_type: type && STAY_TYPES.includes(type) ? type : (type ? 'Other' : 'Hotel'),
       stars: num(b.stars, 'Stars', 0, 5, 1) || null,
       rating: num(b.rating, 'Your rating', 0, 10, 10),
@@ -494,8 +495,10 @@
   // Validates a package from the form or an import. trip_keys / stay_ids are checked against the account by the server.
   function cleanPackage(b) {
     b = b || {};
-    const name = stayStr(b.name, 120);
-    if (!name) throw stayErr('Please give the package a name');
+    // The name is made from the destination ("Palma Nova trip"); a name in an import file is kept if there is one.
+    const destination = stayStr(b.destination, 80);
+    const name = stayStr(b.name, 120) || (destination ? stayStr(destination + ' trip', 120) : null);
+    if (!name) throw stayErr('Please enter the resort or destination');
     const num = (v, label, min, max, dp) => {
       if (v === null || v === undefined || String(v).trim() === '') return null;
       const n = Number(String(v).replace(/[^0-9.\-]/g, ''));
@@ -506,10 +509,15 @@
     const ids = (v, max) => [...new Set((Array.isArray(v) ? v : []).map((x) => String(x == null ? '' : x).trim().slice(0, 64)).filter(Boolean))].slice(0, max);
     const transfers = (Array.isArray(b.transfers) ? b.transfers : []).slice(0, 20).map(cleanTransfer);
     const travellers = num(b.travellers, 'Travellers', 1, 50, 1);
+    // Who is on the package (companion ids). When this list is sent, the number of travellers is you plus these people.
+    const partyGiven = Array.isArray(b.companion_ids);
     return {
       name,
+      party_given: partyGiven,
+      free_child_place: b.free_child_place === true || b.free_child_place === 1 || b.free_child_place === '1' || b.free_child_place === 'true' ? 1 : 0,
+      companion_ids: ids(b.companion_ids, 49),
       provider: stayStr(b.provider, 80),
-      destination: stayStr(b.destination, 80),
+      destination,
       country: stayStr(b.country, 80),
       board: board && PACKAGE_BOARDS.includes(board) ? board : null,
       travellers: travellers == null ? null : Math.round(travellers),

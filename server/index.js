@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 
 {
   const sc = new Set(db.prepare('PRAGMA table_info(stays)').all().map((c) => c.name));
+  if (!sc.has('brand')) db.exec('ALTER TABLE stays ADD COLUMN brand TEXT');
   if (!sc.has('lat')) db.exec('ALTER TABLE stays ADD COLUMN lat REAL');
   if (!sc.has('lon')) db.exec('ALTER TABLE stays ADD COLUMN lon REAL');
   if (!sc.has('rooms_json')) db.exec('ALTER TABLE stays ADD COLUMN rooms_json TEXT');
@@ -141,6 +142,9 @@ CREATE TABLE IF NOT EXISTS package_transfers (
 CREATE INDEX IF NOT EXISTS idx_flights_package ON flights(package_id);
 CREATE INDEX IF NOT EXISTS idx_stays_package ON stays(package_id);
 `);
+  const pkgCols = new Set(db.prepare('PRAGMA table_info(packages)').all().map((c) => c.name));
+  if (!pkgCols.has('companion_ids')) db.exec('ALTER TABLE packages ADD COLUMN companion_ids TEXT');
+  if (!pkgCols.has('free_child_place')) db.exec('ALTER TABLE packages ADD COLUMN free_child_place INTEGER NOT NULL DEFAULT 0');
 }
 
 function tx(fn) {
@@ -407,7 +411,7 @@ function deleteTrip(key) {
 
 /* -------------------------------------------------------------------- stays */
 
-const STAY_COLS = ['name', 'city', 'country', 'address', 'lat', 'lon', 'stay_type', 'stars', 'rating', 'check_in', 'check_out', 'room_type', 'guests', 'rooms', 'rooms_json', 'price', 'booking_ref', 'notes', 'image_url'];
+const STAY_COLS = ['name', 'city', 'country', 'address', 'lat', 'lon', 'stay_type', 'stars', 'rating', 'check_in', 'check_out', 'room_type', 'guests', 'rooms', 'rooms_json', 'price', 'booking_ref', 'notes', 'image_url', 'brand'];
 
 function cleanStay(body) {
   try { return core.cleanStay(body); } catch (e) { throw new HttpError(e.status || 400, e.message); }
@@ -490,7 +494,7 @@ function writeStay(id, body, remap) {
 
 /* ----------------------------------------------------------------- packages */
 
-const PKG_COLS = ['name', 'provider', 'destination', 'country', 'board', 'travellers', 'price', 'booking_ref', 'notes'];
+const PKG_COLS = ['name', 'provider', 'destination', 'country', 'board', 'travellers', 'price', 'booking_ref', 'notes', 'companion_ids', 'free_child_place'];
 
 function cleanPackage(body) {
   try { return core.cleanPackage(body); } catch (e) { throw new HttpError(e.status || 400, e.message); }
@@ -524,8 +528,14 @@ function buildPackages(only) {
     const dates = [...mine.map((f) => f.date), ...st.flatMap((s) => [s.check_in, s.check_out]), ...tr.map((t) => t.date).filter(Boolean)].sort();
     const start = dates[0] || null, end = dates[dates.length - 1] || null;
     const hotel = st[0] || null;
+    let party = null;
+    try { party = r.companion_ids ? JSON.parse(r.companion_ids) : null; } catch (_) { party = null; }
+    const people = party ? db.prepare('SELECT id, name, relationship, date_of_birth FROM travel_companions WHERE user_id = ?').all(CU.id).filter((c) => party.includes(c.id)).map((c) => ({ ...c })) : null;
     return {
       ...r,
+      companion_ids: people ? people.map((c) => c.id) : null,
+      companions: people,
+      free_child_place: !!r.free_child_place,
       start, end, nights: start && end ? core.stayNights(start, end) : 0,
       trips: tripList, stays: st, transfers: tr,
       trip_keys: tripList.map((t) => t.key), stay_ids: st.map((s) => s.id),
@@ -540,8 +550,22 @@ function packageById(id) {
   return p || null;
 }
 
+// Applies the travelling party to a cleaned package: only this account's companions count, and travellers = you + them.
+function finishPackage(p, existingId, remap) {
+  if (p.party_given) {
+    const mine = myCompanionIds();
+    const ids = [...new Set(p.companion_ids.map((x) => (remap ? remap(x) : x)).filter((x) => mine.has(x)))];
+    p.companion_ids = JSON.stringify(ids);
+    p.travellers = 1 + ids.length;
+  } else {
+    const old = existingId ? db.prepare('SELECT companion_ids FROM packages WHERE id = ? AND user_id = ?').get(existingId, CU.id) : null;
+    p.companion_ids = old ? old.companion_ids : null;
+  }
+  return p;
+}
+
 function writePackage(id, body) {
-  const p = cleanPackage(body);
+  const p = finishPackage(cleanPackage(body), id);
   if (id && !db.prepare('SELECT 1 FROM packages WHERE id = ? AND user_id = ?').get(id, CU.id)) throw new HttpError(404, 'Package not found');
   // the trips and stays picked must be this account's own and not already inside a different package
   const tripRowsAll = p.trip_keys.map((k) => {
@@ -594,8 +618,12 @@ function deletePackage(id) {
 /* ---------------------------------------------------------- address search */
 // Address look-ups go from this server to OpenStreetMap's Nominatim (or the service in FL_GEOCODER_URL), so the
 // browser never talks to it directly. Results are cached and requests are spaced out to respect their usage policy.
-const GEOCODER_URL = process.env.FL_GEOCODER_URL || 'https://nominatim.openstreetmap.org/search';
+const GEOCODER_URL = process.env.FL_GEOCODER_URL || '';
+const NOMINATIM_URL = 'https://nominatim.openstreetmap.org/search';
+const PHOTON_URL = 'https://photon.komoot.io/api/';
 const GEOCODING = !/^(0|false|off|no)$/i.test(String(process.env.FL_GEOCODING || 'on').trim());
+// Containers often have a broken IPv6 route; trying IPv4 first avoids long hangs on the look-up.
+try { require('node:dns').setDefaultResultOrder('ipv4first'); } catch (_) { /* older Node: ignore */ }
 const geoCache = new Map();
 let geoChain = Promise.resolve();
 let geoLast = 0;
@@ -607,6 +635,51 @@ function shortAddress(r) {
   return [street, town, a.postcode].filter(Boolean).join(', ') || String(r.display_name || '').split(',').slice(0, 3).join(',').trim();
 }
 
+// A plain-English reason for a failed look-up, so it is clear whether the container, the network or the service is at fault.
+function geoReason(e) {
+  const code = String((e && ((e.cause && e.cause.code) || e.code)) || '');
+  const name = String((e && e.name) || '');
+  if (/^(ENOTFOUND|EAI_AGAIN)$/.test(code)) return 'the server could not look up the address service (DNS problem)';
+  if (/^(ETIMEDOUT|UND_ERR_CONNECT_TIMEOUT)$/.test(code) || name === 'TimeoutError' || name === 'AbortError') return 'the address service did not answer in time (no internet from the server?)';
+  if (/^(ECONNREFUSED|ENETUNREACH|EHOSTUNREACH|ECONNRESET)$/.test(code)) return 'the server could not connect to the address service (no internet access?)';
+  if (e && e.geoStatus === 403 || e && e.geoStatus === 429) return 'the address service refused the request (status ' + e.geoStatus + '), usually too many searches or a blocked network';
+  if (e && e.geoStatus) return 'the address service returned status ' + e.geoStatus;
+  if (/certificate|SSL|TLS/i.test(code + ' ' + String(e && e.message))) return 'a secure connection to the address service could not be made (check the container clock and certificates)';
+  return 'the address service gave an unexpected answer';
+}
+
+// Result rows from Nominatim or Photon, in one shape.
+function fromNominatim(rows) {
+  return (Array.isArray(rows) ? rows : []).map((r) => {
+    const a = r.address || {};
+    return {
+      label: String(r.display_name || '').slice(0, 220), name: r.name ? String(r.name).slice(0, 120) : null,
+      address: shortAddress(r).slice(0, 200), city: a.city || a.town || a.village || a.municipality || null, country: a.country || null,
+      lat: Number(r.lat), lon: Number(r.lon),
+    };
+  });
+}
+function fromPhoton(json) {
+  return ((json && json.features) || []).map((f) => {
+    const p = f.properties || {}, c = (f.geometry && f.geometry.coordinates) || [];
+    const street = [p.housenumber, p.street].filter(Boolean).join(' ');
+    const city = p.city || p.town || p.village || p.district || p.county || null;
+    const address = [street, city, p.postcode].filter(Boolean).join(', ');
+    const label = [p.name, street, city, p.postcode, p.state, p.country].filter(Boolean).join(', ');
+    return { label: label.slice(0, 220), name: p.name ? String(p.name).slice(0, 120) : null, address: (address || label).slice(0, 200), city, country: p.country || null, lat: Number(c[1]), lon: Number(c[0]) };
+  });
+}
+
+async function geoFetch(kind, base, q) {
+  const u = new URL(base);
+  if (kind === 'photon') { u.searchParams.set('q', q); u.searchParams.set('limit', '6'); u.searchParams.set('lang', 'en'); }
+  else { u.searchParams.set('format', 'jsonv2'); u.searchParams.set('q', q); u.searchParams.set('limit', '6'); u.searchParams.set('addressdetails', '1'); }
+  const res = await fetch(u, { headers: { 'User-Agent': `FlightLog/${require('../package.json').version} (self-hosted personal flight log)`, 'Accept-Language': 'en', Accept: 'application/json' }, signal: AbortSignal.timeout(8000) });
+  if (!res.ok) { const err = new Error('status ' + res.status); err.geoStatus = res.status; throw err; }
+  const json = await res.json();
+  return kind === 'photon' ? fromPhoton(json) : fromNominatim(json);
+}
+
 async function geocode(q) {
   if (!GEOCODING) throw new HttpError(503, 'Address search is switched off on this server.');
   q = String(q || '').trim().slice(0, 200);
@@ -614,31 +687,26 @@ async function geocode(q) {
   const key = q.toLowerCase();
   const hit = geoCache.get(key);
   if (hit && Date.now() - hit.at < 24 * 3600 * 1000) return { results: hit.results };
+  // A service set in FL_GEOCODER_URL is used on its own; otherwise OpenStreetMap's Nominatim, then Photon if that fails.
+  const sources = GEOCODER_URL ? [['nominatim', GEOCODER_URL]] : [['nominatim', NOMINATIM_URL], ['photon', PHOTON_URL]];
   const run = async () => {
-    const wait = geoLast + 1100 - Date.now();
-    if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-    geoLast = Date.now();
-    const u = new URL(GEOCODER_URL);
-    u.searchParams.set('format', 'jsonv2');
-    u.searchParams.set('q', q);
-    u.searchParams.set('limit', '6');
-    u.searchParams.set('addressdetails', '1');
-    const res = await fetch(u, { headers: { 'User-Agent': `FlightLog/${require('../package.json').version} (self-hosted)`, 'Accept-Language': 'en' }, signal: AbortSignal.timeout(8000) });
-    if (!res.ok) throw new Error('status ' + res.status);
-    return res.json();
+    let first = null;
+    for (const [kind, base] of sources) {
+      const wait = geoLast + 1100 - Date.now();
+      if (wait > 0) await new Promise((r) => setTimeout(r, wait));
+      geoLast = Date.now();
+      try { return await geoFetch(kind, base, q); } catch (e) {
+        console.error(`[flightlog] address search via ${kind} failed: ${e.geoStatus ? 'status ' + e.geoStatus : (e.cause && e.cause.code) || e.code || e.name + ': ' + e.message}`);
+        if (!first) first = e;
+      }
+    }
+    throw first;
   };
   const job = geoChain.then(run, run);
   geoChain = job.catch(() => {});
-  let rows;
-  try { rows = await job; } catch (e) { throw new HttpError(502, 'Address search is not available right now. You can still type the address in by hand.'); }
-  const results = (Array.isArray(rows) ? rows : []).map((r) => {
-    const a = r.address || {};
-    return {
-      label: String(r.display_name || '').slice(0, 220), name: r.name ? String(r.name).slice(0, 120) : null,
-      address: shortAddress(r).slice(0, 200), city: a.city || a.town || a.village || a.municipality || null, country: a.country || null,
-      lat: Number(r.lat), lon: Number(r.lon),
-    };
-  }).filter((r) => Number.isFinite(r.lat) && Number.isFinite(r.lon));
+  let found;
+  try { found = await job; } catch (e) { throw new HttpError(502, 'Address search is not available: ' + geoReason(e) + '. You can still type the address in by hand.'); }
+  const results = found.filter((r) => Number.isFinite(r.lat) && Number.isFinite(r.lon));
   if (geoCache.size > 500) geoCache.delete(geoCache.keys().next().value);
   geoCache.set(key, { at: Date.now(), results });
   return { results };
@@ -736,8 +804,8 @@ function importAll(data, mode) {
       try {
         if (!raw || typeof raw !== 'object') continue;
         const rawId = raw.id ? String(raw.id).slice(0, 64) : crypto.randomUUID();
-        const p = cleanPackage({ ...raw, trip_keys: [], stay_ids: [] });
         const id = freeId('packages', rawId);
+        const p = finishPackage(cleanPackage({ ...raw, trip_keys: [], stay_ids: [] }), owner('packages', id) === CU.id ? id : null, (g) => companionMap.get(String(g)) || String(g));
         if (owner('packages', id) === CU.id) db.prepare(`UPDATE packages SET ${PKG_COLS.map((c) => c + ' = ?').join(', ')} WHERE id = ? AND user_id = ?`).run(...PKG_COLS.map((c) => p[c]), id, CU.id);
         else db.prepare(`INSERT INTO packages (id, user_id, ${PKG_COLS.join(', ')}) VALUES (?,?,${PKG_COLS.map(() => '?').join(',')})`).run(id, CU.id, ...PKG_COLS.map((c) => p[c]));
         storeTransfers(id, p.transfers);
@@ -923,7 +991,19 @@ function handleApi(method, pathname, query, body) {
     const id = decodeURIComponent(m[1]);
     const row = db.prepare('SELECT id, name, relationship, date_of_birth FROM travel_companions WHERE id = ? AND user_id = ?').get(id, CU.id);
     if (!row) throw new HttpError(404, 'Companion not found');
-    if (method === 'DELETE') { db.prepare('DELETE FROM travel_companions WHERE id = ? AND user_id = ?').run(id, CU.id); return [204, null]; }
+    if (method === 'DELETE') {
+      // take them out of any package party too, and keep each package's traveller count in step
+      for (const pk of db.prepare('SELECT id, companion_ids FROM packages WHERE user_id = ? AND companion_ids IS NOT NULL').all(CU.id)) {
+        let list = [];
+        try { list = JSON.parse(pk.companion_ids) || []; } catch (_) { list = []; }
+        if (list.includes(id)) {
+          const left = list.filter((x) => x !== id);
+          db.prepare('UPDATE packages SET companion_ids = ?, travellers = ? WHERE id = ? AND user_id = ?').run(JSON.stringify(left), 1 + left.length, pk.id, CU.id);
+        }
+      }
+      db.prepare('DELETE FROM travel_companions WHERE id = ? AND user_id = ?').run(id, CU.id);
+      return [204, null];
+    }
     if (method === 'PUT') {
       const name = str((body || {}).name, 100) || row.name;
       const relationship = 'relationship' in (body || {}) ? str(body.relationship, 60) : row.relationship;

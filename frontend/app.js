@@ -1349,7 +1349,6 @@ function decorateStay(s) {
     year: String(s.check_in).slice(0, 4),
     tint: 'linear-gradient(135deg,' + t[0] + ',' + t[1] + ')',
     scoreWord: stayScoreWord(s.rating),
-    _map: false,
   };
 }
 
@@ -1362,8 +1361,8 @@ function stayList() {
   };
   return {
     stays: [], companions: [], loading: true, error: '', sort: 'newest',
-    yearFilter: '__all__', typeFilter: [], countryFilter: [], starFilter: [],
-    open: { year: true, stars: true, type: true, country: true },
+    yearFilter: '__all__', brandFilter: [], typeFilter: [], countryFilter: [], starFilter: [],
+    open: { year: true, brand: true, stars: true, type: true, country: true },
     async load() {
       try {
         const [st, co] = await Promise.all([apiJson('api/stays'), apiJson('api/companions')]);
@@ -1372,12 +1371,13 @@ function stayList() {
       } catch (e) { this.error = 'Could not load stays: ' + e.message; }
       this.loading = false;
     },
-    get filtersActive() { return this.yearFilter !== '__all__' || this.typeFilter.length || this.countryFilter.length || this.starFilter.length; },
-    resetFilters() { this.yearFilter = '__all__'; this.typeFilter = []; this.countryFilter = []; this.starFilter = []; },
+    get filtersActive() { return this.yearFilter !== '__all__' || this.brandFilter.length || this.typeFilter.length || this.countryFilter.length || this.starFilter.length; },
+    resetFilters() { this.yearFilter = '__all__'; this.brandFilter = []; this.typeFilter = []; this.countryFilter = []; this.starFilter = []; },
     get years() {
       const m = countBy(this.stays, (s) => s.year);
       return m.sort((a, b) => b.name.localeCompare(a.name));
     },
+    get brandOptions() { return countBy(this.stays, (s) => s.brand); },
     get typeOptions() { return countBy(this.stays, (s) => s.stay_type); },
     get countryOptions() { return countBy(this.stays, (s) => s.country); },
     get starOptions() {
@@ -1385,6 +1385,7 @@ function stayList() {
     },
     get visibleStays() {
       let out = this.stays.filter((s) => (this.yearFilter === '__all__' || s.year === this.yearFilter)
+        && (!this.brandFilter.length || this.brandFilter.includes(s.brand))
         && (!this.typeFilter.length || this.typeFilter.includes(s.stay_type))
         && (!this.countryFilter.length || this.countryFilter.includes(s.country))
         && (!this.starFilter.length || this.starFilter.includes(String(Math.round(s.stars || 0)))));
@@ -1427,10 +1428,8 @@ function stayList() {
       return t ? c.name + ' (' + t + ')' : c.name;
     },
     guestNames(r, s) { return (r.guests || []).map((g) => this.guestName(g, s && s.check_in)).filter(Boolean).join(', '); },
-    toggleMap(s) { s._map = !s._map; },
-    pinMapCard(el, s) { drawPinMap(el, s.lat, s.lon, null); },
     starsArray(s) { return Array.from({ length: Math.round(s.stars || 0) }, (_, i) => i); },
-    initials(name) { return String(name).split(/\s+/).filter((w) => /^[A-Za-z0-9]/.test(w)).slice(0, 2).map((w) => w[0].toUpperCase()).join(''); },
+    initials(name) { const code = AIRLINE_CODES[name]; if (code) return code; return String(name).split(/\s+/).filter((w) => /^[A-Za-z0-9]/.test(w)).slice(0, 2).map((w) => w[0].toUpperCase()).join(''); },
   };
 }
 
@@ -1441,12 +1440,14 @@ function stayForm(editId) {
   return {
     editId, loading: !!editId, saving: false, error: '', types: STAY_TYPES, roomTypes: window.FLCore.ROOM_TYPES,
     companions: [], pkg: null,
-    f: { name: '', stay_type: 'Hotel', city: '', country: '', address: '', lat: null, lon: null, image_url: '', check_in: '', check_out: '', stars: 0, rating: '', price: '', booking_ref: '', notes: '' },
+    brands: [],
+    f: { name: '', brand: '', stay_type: 'Hotel', city: '', country: '', address: '', lat: null, lon: null, image_url: '', check_in: '', check_out: '', stars: 0, rating: '', price: '', booking_ref: '', notes: '' },
     rooms: [newRoom(['me'])],
     addr: { results: [], open: false, busy: false, msg: '' },
     photo: { mode: 'none', data: '', existing: '', busy: false, error: '', info: '' },
     async load() {
       try { this.companions = (await apiJson('api/companions')).companions; } catch (e) { /* the form still works without names */ }
+      try { this.brands = [...new Set((await apiJson('api/stays')).stays.map((x) => x.brand).filter(Boolean))].sort((a, b) => a.localeCompare(b)); } catch (e) { /* suggestions are optional */ }
       if (!this.editId) return;
       try {
         const s = await apiJson('api/stays/' + this.editId);
@@ -1766,13 +1767,23 @@ function settingsView() {
 const gbp = (v) => '£' + Number(v).toLocaleString('en-GB', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const TRANSFER_KIND_LABELS = { arrival: 'Airport to hotel', departure: 'Hotel to airport', other: 'Other transfer' };
 
+// Who pays for a package: with a free child place, anyone who is a child (2 to 15) on the first day of the holiday travels free.
+function packagePayers(p) {
+  const total = p.travellers || 0;
+  const kids = p.free_child_place && p.companions ? p.companions.filter((c) => groupOn(c, p.start || todayISO()) === 'child').length : 0;
+  const paying = Math.max(1, total - kids);
+  return { total, kids, paying };
+}
+
 function decoratePackage(p) {
   const t = stayTint(p.name);
   return {
     ...p,
     year: p.start ? p.start.slice(0, 4) : '',
     tint: 'linear-gradient(135deg,' + t[0] + ',' + t[1] + ')',
-    perPerson: p.price != null && p.travellers ? p.price / p.travellers : null,
+    ...(() => { const pp = packagePayers(p); return { freeChildren: pp.kids, payingCount: pp.paying }; })(),
+    perPerson: p.price != null && p.travellers ? p.price / packagePayers(p).paying : null,
+    partyText: p.companions ? partyText(p.companions, p.start || todayISO(), true) : '',
     hotel: (p.stays || [])[0] || null,
     flightCount: (p.trips || []).reduce((n, tr) => n + tr.legs.length, 0),
     _open: false,
@@ -1861,11 +1872,16 @@ function packageForm(editId, tripKey) {
   return {
     editId, loading: true, saving: false, error: '', hint: '',
     boards: core.PACKAGE_BOARDS, modes: core.TRANSFER_MODES,
-    f: { name: '', provider: '', destination: '', country: '', board: '', travellers: '', price: '', booking_ref: '', notes: '' },
+    f: { provider: '', destination: '', country: '', board: '', price: '', booking_ref: '', notes: '', free_child_place: false },
     trips: [], stays: [], pickedTrips: [], pickedStays: [], transfers: [],
+    companions: [], companion_ids: [], openKey: '',
+    isOpen(k) { return this.openKey === k; },
+    openDD(k) { this.openKey = k; },
+    closeDD() { this.openKey = ''; },
     async load() {
       try {
-        const [fr, st] = await Promise.all([apiJson('api/flights'), apiJson('api/stays')]);
+        const [fr, st, co] = await Promise.all([apiJson('api/flights'), apiJson('api/stays'), apiJson('api/companions').catch(() => ({ companions: [] }))]);
+        this.companions = co.companions || [];
         const groups = new Map();
         for (const f of fr.flights) { const k = f.trip_id || f.id; if (!groups.has(k)) groups.set(k, []); groups.get(k).push(f); }
         this.trips = [...groups.entries()].map(([key, legs]) => {
@@ -1878,10 +1894,13 @@ function packageForm(editId, tripKey) {
         this.stays = st.stays.map((s) => ({ ...s, nights: core.stayNights(s.check_in, s.check_out), place: [s.city, s.country].filter(Boolean).join(', ') }));
         if (this.editId) {
           const p = await apiJson('api/packages/' + encodeURIComponent(this.editId));
-          for (const k of Object.keys(this.f)) this.f[k] = p[k] == null ? '' : String(p[k]);
+          for (const k of Object.keys(this.f)) this.f[k] = k === 'free_child_place' ? !!p[k] : p[k] == null ? '' : String(p[k]);
           if (this.f.price !== '') this.f.price = Number(this.f.price).toFixed(2);
           this.pickedTrips = [...p.trip_keys];
           this.pickedStays = [...p.stay_ids];
+          // packages saved before the party was recorded start from the people on their flights and rooms
+          if (Array.isArray(p.companion_ids)) this.companion_ids = [...p.companion_ids];
+          else { this.pickedTrips.forEach((k) => this.addTripPeople(k)); this.pickedStays.forEach((k) => this.addStayPeople(k)); }
           this.transfers = p.transfers.map((t) => this.newTransfer(t));
         } else if (tripKey) {
           this.startFromTrip(tripKey);
@@ -1896,10 +1915,9 @@ function packageForm(editId, tripKey) {
       if (t.package_id) { this.error = 'That trip is already part of the package “' + (t.package_name || 'another package') + '”.'; return; }
       this.pickedTrips = [key];
       const dest = core.airportName(t.to);
-      this.f.name = dest + ' holiday';
       this.f.destination = dest;
       this.f.country = t.to.country || '';
-      this.f.travellers = String(1 + (t.companions || []).length);
+      this.addTripPeople(key);
       const fits = this.stays.filter((s) => !s.package_id && s.check_in >= t.start && s.check_out <= dayAfter(t.end));
       this.pickedStays = fits.map((s) => s.id);
       if (fits.length) this.hint = 'We ticked ' + (fits.length === 1 ? 'a stay' : fits.length + ' stays') + ' that fall within the dates of this trip. Untick anything that does not belong.';
@@ -1910,8 +1928,49 @@ function packageForm(editId, tripKey) {
     get busyStays() { return this.stays.filter((s) => s.package_id && s.package_id !== this.editId).length; },
     isTrip(k) { return this.pickedTrips.includes(k); },
     isStay(k) { return this.pickedStays.includes(k); },
-    toggleTrip(k) { this.pickedTrips = this.isTrip(k) ? this.pickedTrips.filter((x) => x !== k) : [...this.pickedTrips, k]; },
-    toggleStay(k) { this.pickedStays = this.isStay(k) ? this.pickedStays.filter((x) => x !== k) : [...this.pickedStays, k]; },
+    toggleTrip(k) {
+      if (this.isTrip(k)) this.pickedTrips = this.pickedTrips.filter((x) => x !== k);
+      else { this.pickedTrips = [...this.pickedTrips, k]; this.addTripPeople(k); }
+    },
+    toggleStay(k) {
+      if (this.isStay(k)) this.pickedStays = this.pickedStays.filter((x) => x !== k);
+      else { this.pickedStays = [...this.pickedStays, k]; this.addStayPeople(k); }
+    },
+    // Picking a trip or stay adds the people already on it to "Travelling with" (you can untick them again).
+    addPeople(ids) {
+      const known = new Set(this.companions.map((c) => c.id));
+      for (const id of ids) if (id !== 'me' && known.has(id) && !this.companion_ids.includes(id)) this.companion_ids.push(id);
+    },
+    addTripPeople(k) { const t = this.trips.find((x) => x.key === k); if (t) this.addPeople(t.legs.flatMap((l) => (l.companions || []).map((c) => c.id))); },
+    addStayPeople(k) { const st = this.stays.find((x) => x.id === k); if (st) this.addPeople((st.room_list || []).flatMap((r) => r.guests || [])); },
+
+    /* ----- travelling with ----- */
+    // Age groups are worked out on the first day of the holiday.
+    get travelDate() {
+      const d = [...this.trips.filter((t) => this.isTrip(t.key)).map((t) => t.start), ...this.stays.filter((x) => this.isStay(x.id)).map((x) => x.check_in)].sort();
+      return d[0] || todayISO();
+    },
+    companionOptions() { const d = this.travelDate; return this.companions.map((c) => ({ v: c.id, label: companionLabel(c, d) })); },
+    companionsLabel() {
+      const names = this.companionOptions().filter((o) => this.companion_ids.includes(o.v)).map((o) => o.label);
+      return names.length ? names.join(', ') : 'Nobody selected';
+    },
+    toggleCompanion(o) {
+      this.companion_ids = this.companion_ids.includes(o.v) ? this.companion_ids.filter((x) => x !== o.v) : [...this.companion_ids, o.v];
+    },
+    get party() { return this.companions.filter((c) => this.companion_ids.includes(c.id)); },
+    get travellerCount() { return 1 + this.party.length; },
+    get partySummary() {
+      const n = this.travellerCount;
+      return n + (n === 1 ? ' traveller' : ' travellers') + ': ' + partyText(this.party, this.travelDate, true);
+    },
+    get freeKids() { return this.f.free_child_place ? this.party.filter((c) => groupOn(c, this.travelDate) === 'child').length : 0; },
+    get payingText() {
+      if (!this.f.free_child_place) return '';
+      const k = this.freeKids, pay = Math.max(1, this.travellerCount - k);
+      return k ? k + (k === 1 ? ' child travels' : ' children travel') + ' free, so the cost is shared by ' + pay + (pay === 1 ? ' person' : ' people') + '.' : 'No one in "Travelling With" is a child on the holiday dates, so everyone pays.';
+    },
+    get autoName() { return this.f.destination.trim() ? this.f.destination.trim() + ' trip' : ''; },
     tripRoute(t) { return core.airportName(t.from) + (t.type === 'return' ? ' ⇄ ' : ' → ') + core.airportName(t.to); },
     tripSub(t) {
       const airlines = [...new Set(t.legs.map((l) => l.airline).filter(Boolean))].join(', ');
@@ -1945,7 +2004,7 @@ function packageForm(editId, tripKey) {
     },
     async save() {
       this.error = '';
-      if (!this.f.name.trim()) { this.error = 'Give the package a name.'; return; }
+      if (!this.f.destination.trim()) { this.error = 'Enter the resort or destination. The package is named after it.'; return; }
       if (!this.pickedTrips.length && !this.pickedStays.length) { this.error = 'Pick at least one trip or stay to put in this package. Log them first if they are not in the lists.'; return; }
       for (let i = 0; i < this.transfers.length; i++) {
         const t = this.transfers[i];
@@ -1954,7 +2013,7 @@ function packageForm(editId, tripKey) {
       this.saving = true;
       try {
         const payload = {
-          ...this.f, trip_keys: this.pickedTrips, stay_ids: this.pickedStays,
+          ...this.f, name: this.autoName, companion_ids: this.companion_ids, trip_keys: this.pickedTrips, stay_ids: this.pickedStays,
           transfers: this.transfers.map(({ _k, ...t }) => t),
         };
         await apiJson(this.editId ? 'api/packages/' + encodeURIComponent(this.editId) : 'api/packages', {
@@ -1998,6 +2057,7 @@ function stayDetail(id) {
     get stayFacts() {
       const s = this.s;
       return [
+        ['Brand', s.brand],
         ['Type', s.stay_type],
         ['Hotel class', s.stars ? s.stars + (s.stars === 1 ? ' star' : ' stars') : ''],
         ['Your rating', s.rating != null ? s.rating.toFixed(1) + ' / 10' + (s.scoreWord ? ' · ' + s.scoreWord : '') : ''],
@@ -2041,13 +2101,20 @@ function stayDetail(id) {
 function packageDetail(id) {
   const core = window.FLCore;
   return {
-    id, p: null, companions: [], unit: 'km', loading: true, error: '', busy: false,
+    id, p: null, flightSets: [], companions: [], unit: 'km', loading: true, error: '', busy: false,
     async load() {
       try {
         const [pk, settings, co] = await Promise.all([apiJson('api/packages/' + encodeURIComponent(this.id)), apiJson('api/account/settings'), apiJson('api/companions').catch(() => ({ companions: [] }))]);
         this.companions = co.companions || [];
         this.unit = settings.distance_unit || 'km';
         this.p = decoratePackage(pk);
+        this.flightSets = this.p.trips.map((tr, i) => {
+          const legs = tr.legs.map(decorateFlight).sort((x, y) => (x.direction === 'return') - (y.direction === 'return') || (x.leg_order || 0) - (y.leg_order || 0) || String(x.date).localeCompare(String(y.date)));
+          const out = legs.filter((l) => l.direction !== 'return'), back = legs.filter((l) => l.direction === 'return');
+          const sections = [{ id: 'outbound', label: back.length ? 'Outbound' : 'Flights', legs: out.length ? out : legs }];
+          if (back.length) sections.push({ id: 'return', label: 'Return', legs: back });
+          return { key: tr.key, trip: tr, first: i === 0, hasStop: out.length > 1 || back.length > 1, sections };
+        });
       } catch (e) { this.error = /not found/i.test(e.message) ? 'That package could not be found. It may have been deleted.' : 'Could not load this package: ' + e.message; }
       this.loading = false;
     },
@@ -2056,6 +2123,7 @@ function packageDetail(id) {
     // Everyone on the package's flights and stay rooms, grouped by age on the first day of the holiday.
     get partyLabel() {
       const p = this.p, day = p.start || todayISO(), ids = new Set();
+      if (p.companions) return partyText(p.companions, day, true);
       (p.trips || []).forEach((tr) => tr.legs.forEach((l) => (l.companions || []).forEach((c) => ids.add(c.id))));
       (p.stays || []).forEach((st) => (st.room_list || []).forEach((r) => (r.guests || []).forEach((g) => { if (g !== 'me') ids.add(g); })));
       const people = [...ids].map((id) => this.companions.find((c) => c.id === id)).filter(Boolean);
@@ -2074,7 +2142,12 @@ function packageDetail(id) {
     },
     get costFacts() {
       const p = this.p;
-      return [['Total price', p.price != null ? gbp(p.price) : 'Not recorded'], ['Per person', p.perPerson != null ? gbp(p.perPerson) : '']].filter(hasText);
+      const free = p.freeChildren;
+      return [
+        ['Total price', p.price != null ? gbp(p.price) : 'Not recorded'],
+        [free ? 'Per paying person' : 'Per person', p.perPerson != null ? gbp(p.perPerson) : ''],
+        ['Free child places', free ? free + (free === 1 ? ' child' : ' children') + ' free, cost shared by ' + p.payingCount : ''],
+      ].filter(hasText);
     },
     get includedFacts() {
       const p = this.p;
@@ -2087,6 +2160,33 @@ function packageDetail(id) {
     },
     fmtStayDate, fmtStayShort,
     tripRoute(t) { return core.airportName(t.from) + (t.type === 'return' ? ' ⇄ ' : ' → ') + core.airportName(t.to); },
+    // Flight cards, the same as on the trip details page.
+    t(v) { return v === '\u2014' ? '' : v; },
+    fdDist(km) { if (!km) return '\u2014'; const v = this.unit === 'mi' ? km * 0.621371 : km; return Math.round(v).toLocaleString() + ' ' + this.unit; },
+    fmtDayDate(d) {
+      const dt = new Date(d + 'T00:00:00Z');
+      if (isNaN(dt.getTime())) return d || '\u2014';
+      return dt.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric', timeZone: 'UTC' }).replace(/^(\w+) /, '$1, ');
+    },
+    durLabel(l) { return l._durText || this.fdDist(l.distance_km); },
+    flightTime(l) { return journeyDurationText(l); },
+    arrives(l) { return arrivesDateText(l); },
+    journeyCard(section) { return buildJourney(section.legs); },
+    connectionMinutes(prev, next) {
+      const a = prev && prev._t && (prev._t.actual || prev._t.sched);
+      const b = next && next._t && (next._t.actual || next._t.sched);
+      if (!a || !b) return null;
+      const m = Math.round((b.depUtc - a.arrUtc) / 60000);
+      return m >= 0 && m <= 14 * 24 * 60 ? m : null;
+    },
+    connectInfo(prev, next) {
+      const m = this.connectionMinutes(prev, next);
+      if (m === null) return null;
+      let label = 'Connect in airport';
+      if (prev.to_airport.iata !== next.from_airport.iata) label = 'Change airport (' + prev.to_airport.iata + ' \u2192 ' + next.from_airport.iata + ')';
+      else if (m >= 24 * 60) label = 'Stopover in ' + core.airportName(next.from_airport);
+      return { dur: core.fmtDuration(m), label, long: m >= 240 && m < 24 * 60 };
+    },
     legTitle(l) { return l.airline + (l.flight_number ? ' ' + l.flight_number : '') + (l.aircraft_type ? ' · ' + l.aircraft_type : ''); },
     fmtDist(km) { if (!km) return ''; const v = this.unit === 'mi' ? km * 0.621371 : km; return Math.round(v).toLocaleString() + ' ' + this.unit; },
     nightsOf(s) { const n = core.stayNights(s.check_in, s.check_out); return n + (n === 1 ? ' night' : ' nights'); },

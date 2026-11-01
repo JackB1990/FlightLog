@@ -798,8 +798,7 @@ test('stay form: address search fills the pin, and the pin can be moved or remov
   assert.ok(s && s.lat === 42.36 && s.lon === -71.06);
   const withPin = l.stays.filter((x) => x.lat != null);
   assert.ok(withPin.length >= 8, 'the demo stays have map pins');
-  l.toggleMap(s);
-  assert.equal(s._map, true);
+  assert.equal(typeof l.toggleMap, 'undefined', 'the map lives on the details page, not the overview');
 
   const e = vm.runInContext(`stayForm('${s.id}')`, ctx);
   await e.load();
@@ -934,7 +933,7 @@ test('packages: convert a trip into a package, edit and delete', async () => {
   const form = vm.runInContext("packageForm('', 'demo-trip-5')", ctx);
   await form.load();
   assert.deepEqual(Array.from(form.pickedTrips), ['demo-trip-5']);
-  assert.equal(form.f.name, 'Dublin holiday');
+  assert.equal(form.autoName, 'Dublin trip');
   assert.equal(form.f.country, 'Ireland');
   assert.equal(form.freeTrips.every((t) => !t.package_id), true);
   assert.equal(form.busyTrips, 3);
@@ -948,13 +947,13 @@ test('packages: convert a trip into a package, edit and delete', async () => {
   assert.equal(form.error, '');
   const list = vm.runInContext('packageList()', ctx);
   await list.load();
-  const made = list.packages.find((p) => p.name === 'Dublin holiday');
+  const made = list.packages.find((p) => p.name === 'Dublin trip');
   assert.ok(made);
   assert.equal(made.price, 480);
   assert.equal(made.transfers.length, 2);
   const fl = vm.runInContext('flightList()', ctx);
   await fl.load();
-  assert.equal(fl.items.find((it) => it.key === 'demo-trip-5').package_name, 'Dublin holiday');
+  assert.equal(fl.items.find((it) => it.key === 'demo-trip-5').package_name, 'Dublin trip');
 
   // a trip already in a package cannot be converted again
   const again = vm.runInContext("packageForm('', 'demo-trip-5')", ctx);
@@ -964,24 +963,24 @@ test('packages: convert a trip into a package, edit and delete', async () => {
   // the trip's edit page knows about the package
   const edit = vm.runInContext("flightForm('demo-trip-5')", ctx);
   await edit.load();
-  assert.equal(edit.pkg.name, 'Dublin holiday');
+  assert.equal(edit.pkg.name, 'Dublin trip');
 
   // validation, then delete frees the trip again
   const blank = vm.runInContext("packageForm('', '')", ctx);
   await blank.load();
   await blank.save();
-  assert.match(blank.error, /name/i);
-  blank.f.name = 'x';
+  assert.match(blank.error, /destination/i);
+  blank.f.destination = 'x';
   await blank.save();
   assert.match(blank.error, /at least one trip or stay/);
   const ed = vm.runInContext(`packageForm('${made.id}', '')`, ctx);
   await ed.load();
-  assert.equal(ed.f.name, 'Dublin holiday');
+  assert.equal(ed.autoName, 'Dublin trip');
   assert.equal(ed.transfers.length, 2);
   vm.runInContext('globalThis.confirm = () => true', ctx);
   await ed.del();
   await list.load();
-  assert.equal(list.packages.some((p) => p.name === 'Dublin holiday'), false);
+  assert.equal(list.packages.some((p) => p.name === 'Dublin trip'), false);
   await fl.load();
   assert.equal(fl.items.find((it) => it.key === 'demo-trip-5').package_id, null);
 });
@@ -1092,4 +1091,170 @@ test('companion labels use the age on the travel date', async () => {
   assert.equal(vm.runInContext('companionLabel', ctx)({ name: 'Sam' }, '2019-06-14'), 'Sam');
   const party = vm.runInContext('partyText', ctx);
   assert.equal(party([c, { date_of_birth: '2025-02-10' }, {}], '2025-12-01', true), '2 adults, 1 child, 1 infant');
+});
+
+test('package form: travelling with is pre-filled from the trip, sets the traveller count and the adult/child/infant split, and the name comes from the destination', async () => {
+  const ctx = await makeCtx();
+  const form = vm.runInContext("packageForm('', 'demo-trip-5')", ctx);
+  await form.load();
+  assert.equal(form.f.travellers, undefined, 'no travellers box any more');
+  assert.equal(form.f.name, undefined, 'no name box any more');
+  const onTrip = Array.from(form.companion_ids);
+  assert.equal(form.travellerCount, 1 + onTrip.length);
+  const lily = form.companions.find((c) => c.name === 'Lily').id;
+  const theo = form.companions.find((c) => c.name === 'Theo').id;
+  form.companion_ids = [lily, theo];
+  assert.equal(form.travellerCount, 3);
+  assert.equal(form.partySummary, '3 travellers: 1 adult, 1 child, 1 infant');
+  form.f.destination = 'Dublin';
+  assert.equal(form.autoName, 'Dublin trip');
+  await form.save();
+  assert.equal(form.error, '');
+  const list = vm.runInContext('packageList()', ctx);
+  await list.load();
+  const made = list.packages.find((p) => p.name === 'Dublin trip');
+  assert.equal(made.travellers, 3);
+  assert.deepEqual(Array.from(made.companion_ids).sort(), [lily, theo].sort());
+  assert.match(made.partyText, /adult/);
+  const d = vm.runInContext(`packageDetail('${made.id}')`, ctx);
+  await d.load();
+  assert.match(d.partyLabel, /1 adult/);
+  // edit keeps the party, and removing a companion updates the package
+  const ed = vm.runInContext(`packageForm('${made.id}', '')`, ctx);
+  await ed.load();
+  assert.equal(ed.travellerCount, 3);
+  const comp = vm.runInContext('companionsView()', ctx);
+  vm.runInContext('globalThis.confirm = () => true', ctx);
+  await comp.load();
+  await comp.del(theo);
+  await list.load();
+  assert.equal(list.packages.find((p) => p.name === 'Dublin trip').travellers, 2);
+});
+
+test('free child place: children on the holiday dates travel free and the cost is shared by everyone else', async () => {
+  const ctx = await makeCtx();
+  // demo package 1 (Majorca, Aug 2023) has a free child place: you, Alex and Lily (6, a child), so 2 people pay
+  const d = vm.runInContext("packageDetail('demo-package-1')", ctx);
+  await d.load();
+  assert.equal(d.p.travellers, 3);
+  assert.equal(d.p.freeChildren, 1);
+  assert.equal(d.p.payingCount, 2);
+  assert.equal(d.p.perPerson, 1092);
+  assert.deepEqual(Array.from(d.costFacts.map((r) => r[0])), ['Total price', 'Per paying person', 'Free child places']);
+  assert.match(d.costFacts[2][1], /1 child free, cost shared by 2/);
+
+  // a package without the tick shares the cost by everyone
+  const t = vm.runInContext("packageDetail('demo-package-3')", ctx);
+  await t.load();
+  assert.equal(t.p.freeChildren, 0);
+  assert.equal(t.p.perPerson, 670);
+
+  // in the form: untick, and the infant never counts as a child; tick and the child travels free
+  const form = vm.runInContext("packageForm('demo-package-1', '')", ctx);
+  await form.load();
+  assert.equal(form.f.free_child_place, true);
+  assert.equal(form.freeKids, 1);
+  assert.match(form.payingText, /1 child travels free, so the cost is shared by 2 people/);
+  form.f.free_child_place = false;
+  assert.equal(form.payingText, '');
+  await form.save();
+  const list = vm.runInContext('packageList()', ctx);
+  await list.load();
+  const p1 = list.packages.find((p) => p.id === 'demo-package-1');
+  assert.equal(p1.free_child_place, false);
+  assert.equal(p1.perPerson, 728);
+});
+
+test('stays: brand box on the form and a Brand filter between year and star rating', async () => {
+  const ctx = await makeCtx();
+  const l = vm.runInContext('stayList()', ctx);
+  await l.load();
+  const names = Array.from(l.brandOptions.map((o) => o.name));
+  assert.ok(names.includes('Palm Resorts') && names.includes('Meridian Collection'));
+  const total = l.visibleStays.length;
+  l.brandFilter = ['Palm Resorts'];
+  assert.ok(l.visibleStays.length > 0 && l.visibleStays.length < total);
+  assert.ok(l.visibleStays.every((s) => s.brand === 'Palm Resorts'));
+  assert.ok(l.filtersActive);
+  l.resetFilters();
+  assert.equal(l.visibleStays.length, total);
+
+  const f = vm.runInContext("stayForm('')", ctx);
+  await f.load();
+  assert.ok(Array.from(f.brands).includes('Palm Resorts'), 'existing brands are offered as suggestions');
+  f.f.name = 'New Brand Hotel'; f.f.brand = 'Palm Resorts'; f.f.check_in = '2026-12-01'; f.f.check_out = '2026-12-03';
+  await f.save();
+  assert.equal(f.error, '');
+  await l.load();
+  assert.equal(l.brandOptions.find((o) => o.name === 'Palm Resorts').n, 3, 'two demo stays plus the new one');
+  assert.ok(l.stays.some((s) => s.name === 'New Brand Hotel' && s.brand === 'Palm Resorts'));
+
+  const html = (await import('node:fs')).readFileSync(new URL('../frontend/index.html', import.meta.url), 'utf8');
+  const filters = html.slice(html.indexOf('x-data="stayList()"'));
+  const iYear = filters.indexOf('<span>Year</span>'), iBrand = filters.indexOf('<span>Brand</span>'), iStars = filters.indexOf('<span>Star rating</span>');
+  assert.ok(iYear > 0 && iYear < iBrand && iBrand < iStars, 'Brand filter sits between Year and Star rating');
+});
+
+test('See full package is on the flight, trip and stay details pages, not on the overview cards', async () => {
+  const { readFileSync } = await import('node:fs');
+  const html = readFileSync(new URL('../frontend/index.html', import.meta.url), 'utf8');
+  assert.equal((html.match(/>See full package</g) || []).length, 3, 'single flight, trip and stay details pages');
+  const at = (k) => html.indexOf(k);
+  const cards = html.slice(at('<template x-for="item in visibleItems"'), at('<template x-if="route===\'flight\'">'));
+  assert.ok(cards.length > 1000, 'found the flights overview');
+  assert.equal(cards.includes('See full package'), false, 'flight overview cards');
+  const s0 = at('x-data="stayList()"'), stays = html.slice(s0, html.indexOf('<template x-if="route===\'stay\'">', s0));
+  assert.ok(stays.length > 1000, 'found the stays overview');
+  assert.equal(stays.includes('See full package'), false, 'stay overview cards');
+  assert.equal(html.includes('x-text="\'Part of \' + (item.package_name'), false, 'the old Part of buttons are gone');
+});
+
+test('stay cards: 6:4 photo, no booking/room detail in the middle, flights-style side panel', async () => {
+  const { readFileSync } = await import('node:fs');
+  const css = readFileSync(new URL('../frontend/theme.css', import.meta.url), 'utf8');
+  assert.match(css, /\n\.stay-photo \{[^}]*aspect-ratio: 3 \/ 2/, 'photos are 6:4');
+  assert.match(css, /\.pkg-card \.stay-photo \{[^}]*aspect-ratio: auto/, 'packages keep their original photo size');
+  assert.equal(/\n\.stay-photo \{[^}]*min-height: 1\d\dpx/.test(css), false, 'no fixed minimum height creating dead space');
+  assert.equal(/\.stay-side \.fc-side-body \{ text-align: right/.test(css), false, 'the side panel is left aligned like the flight cards');
+  const html = readFileSync(new URL('../frontend/index.html', import.meta.url), 'utf8');
+  assert.ok(html.includes('<aside class="stay-side fc-side">'), 'stay side panel uses the same classes as the flight cards');
+});
+
+test('package cards: no tag, provider/party/ref line or notes on the overview', async () => {
+  const { readFileSync } = await import('node:fs');
+  const html = readFileSync(new URL('../frontend/index.html', import.meta.url), 'utf8');
+  const start = html.indexOf('<article class="stay-card pkg-card">');
+  const card = html.slice(start, html.indexOf('</article>', start));
+  assert.ok(start > 0);
+  for (const gone of ['pkg-tag', 'stay-facts', 'stay-notes', 'booking_ref']) assert.equal(card.includes(gone), false, gone);
+});
+
+test('package details: flights use the same cards as the trip details page, with a View trip link', async () => {
+  const { readFileSync } = await import('node:fs');
+  const ctx = await makeCtx();
+  const d = vm.runInContext("packageDetail('demo-package-3')", ctx);
+  await d.load();
+  assert.equal(d.flightSets.length, 1);
+  const fs = d.flightSets[0];
+  assert.deepEqual(Array.from(fs.sections.map((s) => s.label)), ['Outbound', 'Return']);
+  assert.equal(fs.sections[0].legs.length, 1);
+  assert.ok(fs.sections[0].legs[0]._durText, 'legs are decorated with times');
+  assert.match(d.fmtDayDate('2026-07-02'), /^Thu, 2 Jul 2026$/);
+  const html = readFileSync(new URL('../frontend/index.html', import.meta.url), 'utf8');
+  assert.ok(html.includes('<div class="fd-dir pkg-trip-head"><span><b>Flight Details</b></span><a :href="\'#/trip?id=\' + fs.key"'), 'Flight Details heading carries the View trip link');
+  const pd = html.indexOf('<template x-if="route===\'package\'">');
+  assert.ok(html.indexOf('detail-hero', pd) < html.indexOf('>Package Details</h2>', pd), 'photo comes before the Package Details heading');
+  assert.equal(html.slice(pd, html.indexOf('route===\'package-add\'', pd)).includes('tripRoute(fs.trip)'), false, 'no route text above the flights');
+  const at = html.indexOf('x-for="fs in flightSets"');
+  const part = html.slice(at, html.indexOf('x-for="s in p.stays"', at));
+  for (const bit of ['fd-card', 'fd-top', 'fd-timeline', 'fd-foot', 'Journey duration', 'View trip', 'all times are local']) assert.ok(part.includes(bit), bit);
+});
+
+test('package details photo is 6:4 and stay details photo is unchanged', async () => {
+  const { readFileSync } = await import('node:fs');
+  const css = readFileSync(new URL('../frontend/theme.css', import.meta.url), 'utf8');
+  const html = readFileSync(new URL('../frontend/index.html', import.meta.url), 'utf8');
+  assert.match(css, /\.detail-hero\.pkg-hero \{[^}]*aspect-ratio: 3 \/ 2/);
+  assert.match(css, /\n\.detail-hero \{[^}]*height: 220px/);
+  assert.equal((html.match(/detail-hero pkg-hero/g) || []).length, 1);
 });

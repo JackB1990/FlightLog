@@ -1,9 +1,5 @@
 <div align="center">
 
-[![Latest release](https://img.shields.io/github/v/release/YOUR_GITHUB_USERNAME/flightlog?style=flat-square)](https://github.com/YOUR_GITHUB_USERNAME/flightlog/releases)
-[![Container image](https://img.shields.io/badge/ghcr.io-flightlog-blue?style=flat-square&logo=docker&logoColor=white)](https://github.com/YOUR_GITHUB_USERNAME/flightlog/pkgs/container/flightlog)
-[![Stars](https://img.shields.io/github/stars/YOUR_GITHUB_USERNAME/flightlog?style=flat-square)](https://github.com/YOUR_GITHUB_USERNAME/flightlog/stargazers)
-
 <img src="docs/icon.png" alt="FlightLog icon" width="96">
 
 ### FlightLog
@@ -18,8 +14,8 @@ A self-hosted personal travel log for the flights you have taken, the places you
 
 * **Flights**: log every flight with airport, airline, aircraft type, registration, cabin class, seat, times, delays and the total price. Shown as a search-results style list of flight cards, with filters for year, airline, cabin class and punctuality
 * **Trips**: group outbound, return and connecting flights into one trip, with the time between connections
-* **Stays**: hotels, apartments and other places you have stayed, with an address search and map pin, a photo, a 0 to 10 rating, rooms and who is in each one, and the cost
-* **Packages**: bundle flights, a hotel and transfers into one package holiday with a single price. Convert an existing trip into a package in one click; flights and stays inside show "Part of a package" instead of a price
+* **Stays**: hotels, apartments and other places you have stayed, with an optional hotel brand (also a filter on the Stays page), an address search and map pin, a photo, a 0 to 10 rating, rooms and who is in each one, and the cost
+* **Packages**: bundle flights, a hotel and transfers into one package holiday with a single price. The package is named after its resort or destination ("Palma Nova trip"), and "Travelling With" works out the number of travellers and the adult / child / infant split. Tick **Free Child Place** and anyone who is a child (2 to 15) on the first day of the holiday travels free, with the price shared between everyone else. Convert an existing trip into a package in one click; flights and stays inside show "Part of a package" instead of a price
 * **Travel companions**: record who you travel with, with an optional date of birth. Their age is worked out on each trip's travel date: infant (under 2), child (2 to 15) or adult (16 and over, or no date of birth)
 * **Route map**: great-circle routes (antimeridian-safe) on a world map, centred on your home country
 * **Statistics**: six tabs covering airlines and aircraft, places, flights and delays, spend, people and more. Flights and distance side by side, with a world map shading the countries you have visited
@@ -34,7 +30,7 @@ A self-hosted personal travel log for the flights you have taken, the places you
 
 ## 🚀 Getting Started
 
-* [Deploy with Docker Compose, Portainer and TrueNAS](#deploying)
+* [Deploy with Docker Compose, Portainer or TrueNAS](#deploying)
 * [Configuration](#configuration)
 * [Accounts](#accounts)
 * [Backups and importing data](#backups-and-importing-data)
@@ -45,7 +41,6 @@ Already have Docker? The short version:
 
 ```bash
 curl -O https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/flightlog/main/docker-compose.yml
-# replace YOUR_GITHUB_USERNAME in the file (lowercase), then:
 docker compose up -d
 ```
 
@@ -67,68 +62,83 @@ Use the **One way / Return** toggle when logging. A one-way flight is stored as 
 
 ## Deploying
 
-#### Step 1: Put the project on GitHub
+FlightLog is published as a ready-made container image, `ghcr.io/YOUR_GITHUB_USERNAME/flightlog:latest`, built automatically from this repository. You do not need to build anything or copy any source code: you only need a machine that can run Docker (a home server, NAS, mini PC or a VPS) and one small compose file.
 
-1. Sign in at <https://github.com>, click **+ → New repository**.
-   * Name: `flightlog`
-   * Visibility: **Public** is simplest. Private works too, but see the note in Step 3.
-   * Leave "Add a README" **unticked**. Click **Create repository**.
-2. Upload the project. Pick **one** way:
+**What you need**
 
-   **A. Command line (recommended: it handles the hidden `.github` folder for you)**
+* Docker with the Compose plugin (or a tool that runs compose files, such as Portainer)
+* About 200 MB of disk space for the image, plus a little for your data
+* A free port on the machine (`8420` by default)
+
+Pick the method that suits your setup. All three run the same image and keep your data in the same place.
+
+### Option 1: Docker Compose (command line)
+
+1. Download the compose file into a new folder:
+
    ```bash
-   cd flightlog            # the unzipped project folder
-   git init -b main
-   git add .
-   git commit -m "FlightLog"
-   git remote add origin https://github.com/YOUR_GITHUB_USERNAME/flightlog.git
-   git push -u origin main
+   mkdir flightlog && cd flightlog
+   curl -O https://raw.githubusercontent.com/YOUR_GITHUB_USERNAME/flightlog/main/docker-compose.yml
    ```
-   (GitHub will ask you to sign in; use a personal access token as the password if prompted.)
 
-   **B. Browser upload**: on the empty repo page choose **uploading an existing file**, drag in *everything* from inside the project folder, then **Commit changes**.
-   Make sure the hidden `.github` folder comes too (macOS Finder: press `Cmd + Shift + .` to show hidden files; Windows: it is visible by default). Without it, no image gets built.
+2. (Optional) Create a file called `.env` next to it to change any [settings](#configuration), for example:
 
-#### Step 2: Let GitHub build the image
+   ```bash
+   FL_PORT=8420
+   FL_SIGNUPS=on
+   ```
 
-1. Open the repo's **Actions** tab. The workflow **Test and publish image** starts by itself on every push to `main`.
-2. Wait for both jobs (`test`, then `publish`) to turn green. The first run takes roughly 5-10 minutes.
-3. If it fails, open the failing step and send me the log.
+3. Start it:
 
-#### Step 3: Make the image downloadable
+   ```bash
+   docker compose up -d
+   ```
 
-GitHub packages start out private. On your GitHub profile click **Packages → flightlog → Package settings → Danger Zone → Change visibility → Public**.
+4. Open `http://localhost:8420` (or `http://YOUR-SERVER-IP:8420` from another device). `docker compose ps` should show the container as *healthy* after about 15 seconds.
 
-> Keeping it private? In Portainer go to **Registries → Add registry → Custom**: URL `ghcr.io`, your GitHub username, and a personal access token with the `read:packages` scope.
-
-#### Step 4: Prepare TrueNAS (optional but tidy)
-
-By default the database lives in a Docker volume called `flightlog-data`, and no preparation is needed.
-
-If you would rather keep it in a dataset (so it is covered by your snapshots and backups):
-
-1. **Datasets → Add Dataset**, e.g. `tank/apps/flightlog` (preset *Apps* or *Generic*).
-2. **Edit Permissions** on it: user **apps**, group **apps** (both are ID **568**), tick *Apply User / Apply Group*, save.
-3. You will use its path, e.g. `/mnt/tank/apps/flightlog`, in the next step as `FL_DATA`.
-
-#### Step 5: Deploy in Portainer
+### Option 2: Portainer
 
 1. In Portainer choose your environment (usually **local**), then **Stacks → Add stack**.
-2. Name: `flightlog`. Build method: **Web editor**.
-3. Paste in the contents of `docker-compose.yml` and replace `YOUR_GITHUB_USERNAME` with your GitHub username in **lowercase**.
-4. Scroll to **Environment variables → Add environment variable** and (recommended) add:
+2. Name it `flightlog` and choose the **Web editor**.
+3. Paste in the contents of [`docker-compose.yml`](docker-compose.yml).
+4. Under **Environment variables** you can optionally add any of the settings below. None are required.
 
-   | Name | Value | What it does |
-   |------|-------|--------------|
-   | `FL_PASSWORD` | something strong | Optional. Creates (or keeps) an account for `FL_USER` with this password. Not needed: you can create your account on the login page |
-   | `FL_SIGNUPS` | `off` | Optional. Set to `off` after your accounts exist so nobody else can register |
-   | `FL_PORT` | `8420` | Port on the NAS (change if it clashes) |
-   | `FL_DATA` | `/mnt/tank/apps/flightlog` | Only if you made a dataset in Step 4 |
+   | Name | Example | What it does |
+   |------|---------|--------------|
+   | `FL_PORT` | `8420` | Port to open on your server (change it if it clashes with something else) |
+   | `FL_SIGNUPS` | `off` | Stops anyone else creating an account once yours exists |
+   | `FL_DATA` | `/mnt/tank/apps/flightlog` | Keep the database in a folder or dataset of your choice instead of a Docker volume |
+   | `FL_PASSWORD` | *(a strong password)* | Creates an account for `FL_USER` with this password. Not needed: you can create your account on the login page |
 
-5. Click **Deploy the stack**.
-6. Visit `http://YOUR-TRUENAS-IP:8420`. In Portainer, **Containers → flightlog** should show *healthy* after about 15 seconds.
+5. Click **Deploy the stack**, then visit `http://YOUR-SERVER-IP:8420`. Under **Containers → flightlog** the container should show *healthy* after about 15 seconds.
 
-FlightLog starts empty: no sample data is installed. On your first visit you will see the login page: choose **Create account**, pick a username and password, your **home country** and **miles or kilometres** (both can be changed later in **Settings**), then **Log a Flight**.
+### Option 3: TrueNAS SCALE (with Portainer)
+
+Follow Option 2, with one extra step first if you want your database inside a dataset (so it is covered by your snapshots and backups). Without it, FlightLog uses a Docker volume and needs no preparation.
+
+1. **Datasets → Add Dataset**, for example `tank/apps/flightlog` (preset *Apps* or *Generic*).
+2. **Edit Permissions** on it: user **apps**, group **apps** (both are ID **568**), tick *Apply User / Apply Group*, then save.
+3. When you deploy the stack, set `FL_DATA` to the dataset path, for example `/mnt/tank/apps/flightlog`.
+
+### First run
+
+FlightLog starts empty: no sample data is installed. Open it in your browser, choose **Create account**, pick a username and password, your **home country** and **miles or kilometres** (both can be changed later in **Settings**), then **Log a Flight**.
+
+Once everyone who needs an account has one, set `FL_SIGNUPS` to `off` and redeploy so nobody else can register.
+
+### Running it from outside your home
+
+Passwords sent over plain `http://` can be read by anyone on the same network, which is fine on a home LAN. To reach FlightLog from the internet, put it behind a reverse proxy that provides HTTPS (Nginx Proxy Manager, Caddy or a Cloudflare Tunnel) and forward the `X-Forwarded-Proto` header so the login cookie is marked secure. FlightLog uses relative URLs, so it also works under a sub-path.
+
+### Building the image yourself (optional)
+
+If you would rather build from source than pull the published image, clone the repository and run:
+
+```bash
+git clone https://github.com/YOUR_GITHUB_USERNAME/flightlog.git
+cd flightlog
+docker compose -f docker-compose.build.yml up --build -d
+```
 
 ## Accounts
 
@@ -138,7 +148,10 @@ FlightLog starts empty: no sample data is installed. On your first visit you wil
 
 ## Updating
 
-Push a change to `main` and wait for the green build, then in Portainer open the stack → **Editor** → switch on **Re-pull image and redeploy** → **Update the stack**. Your data is untouched.
+Your data lives in the Docker volume (or the folder set by `FL_DATA`), not in the container, so updating never touches it.
+
+* **Docker Compose:** in the folder with your compose file, run `docker compose pull && docker compose up -d`.
+* **Portainer:** open the stack → **Editor** → switch on **Re-pull image and redeploy** → **Update the stack**.
 
 **Upgrading from the version without accounts:** your flights and companions are kept. If you had set `FL_PASSWORD`, the same username (`FL_USER`, default `flightlog`) and password now work on the new login page and that account owns your existing flights. If you had no password, the first account created on the login page takes over your existing flights, so create it yourself straight after updating.
 
@@ -147,7 +160,7 @@ Push a change to `main` and wait for the green build, then in Portainer open the
 * **Settings → Backup & Restore → Download export** gives one JSON file with everything.
 * Or snapshot/copy the dataset (or volume): the whole database is one file, `flightlog.db`.
 * To restore: **Settings → Import file**. Tick *Replace existing data of the same kind* to wipe first; only the kinds of data in the file (flights, stays, packages) are replaced, so a file of hotels never wipes your flights.
-* **Importing just stays or packages:** the same button accepts a file with only a `stays` list, only a `packages` list, or any mix with `flights`. A stay needs `name`, `check_in` and `check_out` (YYYY-MM-DD); `city`, `country`, `lat`, `lon`, `stay_type`, `stars`, `rating`, `price`, `booking_ref` and `notes` are optional. Give each stay a fixed `id` and re-importing the file updates it instead of adding a copy. A package needs a `name` and can carry its own `stays` and `transfers` (`kind`, `mode`, `date`, `time`, `from_place`, `to_place`, `notes`):
+* **Importing just stays or packages:** the same button accepts a file with only a `stays` list, only a `packages` list, or any mix with `flights`. A stay needs `name`, `check_in` and `check_out` (YYYY-MM-DD); `brand`, `city`, `country`, `lat`, `lon`, `stay_type`, `stars`, `rating`, `price`, `booking_ref` and `notes` are optional. Give each stay a fixed `id` and re-importing the file updates it instead of adding a copy. A package needs a `destination` (its name becomes "<destination> trip" unless you give a `name`) and can carry its own `stays` and `transfers` (`kind`, `mode`, `date`, `time`, `from_place`, `to_place`, `notes`):
 
 ```json
 { "stays": [ { "id": "rome-2025", "name": "Alpha Hotel", "check_in": "2025-05-01", "check_out": "2025-05-03", "city": "Rome", "country": "Italy" } ],
@@ -171,18 +184,17 @@ Push a change to `main` and wait for the green build, then in Portainer open the
 | `DATA_DIR` | `/data` | Where `flightlog.db` is stored |
 | `TZ` | `Europe/London` | Container time zone |
 
-Passwords sent over plain `http://` can be read by anyone on your network. That is fine for a home LAN. For access from outside, put it behind a reverse proxy with HTTPS (forward the `X-Forwarded-Proto` header so the login cookie is marked secure) (Nginx Proxy Manager, Caddy, Cloudflare Tunnel). The app uses relative URLs, so it also works under a sub-path.
-
 ## Troubleshooting
 
 | Symptom | Fix |
 |---------|-----|
-| `pull access denied` / `denied` when deploying | Package is still private (Step 3), or the username in the YAML is wrong / not lowercase |
-| Container restarts with `EACCES` / `unable to open database file` | The `FL_DATA` folder is not owned by user/group 568 (Step 4) |
+| `pull access denied` / `denied` when deploying | The image name in the compose file is wrong (it must be lowercase), or the publisher has not made the image public yet |
+| Container restarts with `EACCES` / `unable to open database file` | The `FL_DATA` folder is not owned by user/group 568 (see Option 3) |
 | `port is already allocated` | Set a different `FL_PORT` |
 | Airport search finds only ~150 airports | The full dataset is missing from the image: check the **Actions** build log for the `curl` step |
 | Airline logos blank | Logos are fetched from a public logo service and fall back to the airline name when offline |
-| Portainer build error `mkdir /.docker: permission denied` | Only when using `docker-compose.build.yml`: Portainer's `HOME` is unset. Use the prebuilt-image YAML instead |
+| Portainer build error `mkdir /.docker: permission denied` | Only when building from source in Portainer: its `HOME` is unset. Use the prebuilt-image compose file instead |
+| Address search on the Stays form says it is not available | The server cannot reach the address service. Open **Containers → flightlog → Logs** in Portainer and look for `address search via ... failed` (`ENOTFOUND` / `EAI_AGAIN` = DNS, `ETIMEDOUT` / `ENETUNREACH` = no internet from the container, `status 403` / `429` = blocked or rate limited). For DNS problems uncomment the `dns:` lines in `docker-compose.yml` (or set your NAS's DNS), then redeploy. FlightLog tries OpenStreetMap Nominatim and then Photon; to use your own service set `FL_GEOCODER_URL`. You can always type the address by hand |
 | Blank page | Hard-refresh (Ctrl/Cmd + Shift + R). The page itself prints a message if its libraries failed to load |
 
 ## Project layout
@@ -207,4 +219,3 @@ Run the tests locally with `npm test` (Node 22.5 or newer). To try the container
 * Address search: [Nominatim](https://nominatim.org/)
 * Maps: [Leaflet](https://leafletjs.com/). Interface: [Alpine.js](https://alpinejs.dev/)
 * Airline logos are the property of their respective owners and are used only to identify the airline.
-* README layout inspired by [AirTrail](https://github.com/johanohly/AirTrail)

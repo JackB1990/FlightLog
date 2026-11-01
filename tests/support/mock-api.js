@@ -35,7 +35,7 @@
     });
     // Trips: [trip number, [flight numbers outbound], [flight numbers return]]. Flight 19 stays a standalone flight.
     const TRIPS = [[1, [1], [2]], [2, [3], [4]], [3, [5, 6], [7, 8]], [4, [9], [10]], [5, [11], [12]], [6, [13], [14]], [7, [15], [16]], [8, [17], [18]]];
-    const alex = 'demo-companion-alex', sam = 'demo-companion-sam', mum = 'demo-companion-mum';
+    const alex = 'demo-companion-alex', sam = 'demo-companion-sam', mum = 'demo-companion-mum', lily = 'demo-companion-lily', theo = 'demo-companion-theo';
     const flights = [
       F(1, '2023-04-08', 'KLM', 'KL1536', 'Embraer E190', 'Economy', '9C', 'HUY', 'AMS', '07:05', '09:10', { companion_ids: [alex] }),
       F(2, '2023-04-12', 'KLM', 'KL1537', 'Embraer E190', 'Economy', '10A', 'AMS', 'HUY', '19:50', '19:55', { companion_ids: [alex] }),
@@ -71,8 +71,8 @@
         { id: alex, name: 'Alex', relationship: 'Partner', date_of_birth: '1992-03-18' },
         { id: sam, name: 'Sam', relationship: 'Friend', date_of_birth: null },
         { id: mum, name: 'Mum', relationship: 'Family', date_of_birth: '1961-09-02' },
-        { id: uid(), name: 'Lily', relationship: 'Niece', date_of_birth: '2017-06-14' },
-        { id: uid(), name: 'Theo', relationship: 'Nephew', date_of_birth: '2025-02-10' },
+        { id: lily, name: 'Lily', relationship: 'Niece', date_of_birth: '2017-06-14' },
+        { id: theo, name: 'Theo', relationship: 'Nephew', date_of_birth: '2025-02-10' },
       ],
       customAirports: [],
       stays: [
@@ -102,6 +102,8 @@
       pkgStay('demo-stay-16', { name: 'Quinta do Mar Apartments', city: 'Albufeira', country: 'Portugal', stay_type: 'Apartment', stars: 3, rating: 7.6, check_in: '2026-01-10', check_out: '2026-01-17', room_type: 'Apartment', rooms: 1, guests: 3, room_list: room('Apartment', ['me', alex, sam]) }),
       pkgStay('demo-stay-17', { name: 'Costa Adeje Palms', city: 'Costa Adeje', country: 'Spain', stay_type: 'Resort', stars: 4, rating: 8.7, check_in: '2026-07-02', check_out: '2026-07-09', room_type: 'Double room', rooms: 1, guests: 2, room_list: room('Double room', ['me', alex]), image_data: photo('demo-stay-5') }),
     );
+    const brandOf = { 'The Grand Meridian': 'Meridian Collection', 'Sunset Bay Hotel': 'Sunset Hotels', 'Palm Crescent Resort & Spa': 'Palm Resorts', 'Costa Adeje Palms': 'Palm Resorts', 'Skyline Tower Hotel': 'Meridian Collection', 'Riverside Inn': 'Sunset Hotels' };
+    data.stays.forEach((x) => { if (x.name && brandOf[x.name]) x.brand = brandOf[x.name]; });
     [3, 15, 17].forEach((n) => { flights[n - 1].price = null; });
     [4, 16, 18].forEach((n) => { flights[n - 1].price = null; });
     const link = (nums, pkg) => nums.forEach((n) => { flights[n - 1].package_id = pkg; });
@@ -111,11 +113,11 @@
     data.stays.find((x) => x.id === 'demo-stay-17').package_id = 'demo-package-3';
     const T = (kind, mode, date, time, from_place, to_place, notes) => ({ id: uid(), kind, mode, date, time, from_place, to_place, notes: notes || null });
     data.packages = [
-      { id: 'demo-package-1', name: 'Majorca summer fortnight', provider: 'Jet2holidays', destination: 'Palma Nova', country: 'Spain', board: 'All inclusive', travellers: 3, price: 2184, booking_ref: 'J2H-48215', notes: 'Kids club was great. Ask for a sea view next time.', created_at: '2023-06-01T00:00:00Z',
+      { id: 'demo-package-1', name: 'Majorca summer fortnight', provider: 'Jet2holidays', destination: 'Palma Nova', country: 'Spain', board: 'All inclusive', free_child_place: true, companion_ids: [alex, lily], travellers: 3, price: 2184, booking_ref: 'J2H-48215', notes: 'Kids club was great. Ask for a sea view next time.', created_at: '2023-06-01T00:00:00Z',
         transfers: [T('arrival', 'Coach', '2023-08-05', '10:40', 'Palma Airport (PMI)', 'Hotel Playa Serena', '45 minutes, one stop'), T('departure', 'Coach', '2023-08-19', '08:30', 'Hotel Playa Serena', 'Palma Airport (PMI)')] },
-      { id: 'demo-package-2', name: 'Algarve winter sun', provider: 'easyJet holidays', destination: 'Albufeira', country: 'Portugal', board: 'Self catering', travellers: 3, price: 1096, booking_ref: 'EJH-77031', notes: null, created_at: '2025-11-02T00:00:00Z',
+      { id: 'demo-package-2', name: 'Algarve winter sun', provider: 'easyJet holidays', destination: 'Albufeira', country: 'Portugal', board: 'Self catering', companion_ids: [alex, theo], travellers: 3, price: 1096, booking_ref: 'EJH-77031', notes: null, created_at: '2025-11-02T00:00:00Z',
         transfers: [T('arrival', 'Private car', '2026-01-10', '14:00', 'Faro Airport (FAO)', 'Quinta do Mar Apartments'), T('departure', 'Private car', '2026-01-17', '11:30', 'Quinta do Mar Apartments', 'Faro Airport (FAO)')] },
-      { id: 'demo-package-3', name: 'Tenerife week', provider: 'Jet2holidays', destination: 'Costa Adeje', country: 'Spain', board: 'Half board', travellers: 2, price: 1340, booking_ref: 'J2H-90377', notes: 'Ferry day trip to La Gomera on day 4.', created_at: '2026-03-14T00:00:00Z',
+      { id: 'demo-package-3', name: 'Tenerife week', provider: 'Jet2holidays', destination: 'Costa Adeje', country: 'Spain', board: 'Half board', companion_ids: [alex], travellers: 2, price: 1340, booking_ref: 'J2H-90377', notes: 'Ferry day trip to La Gomera on day 4.', created_at: '2026-03-14T00:00:00Z',
         transfers: [T('arrival', 'Shared shuttle', '2026-07-02', '11:15', 'Tenerife South Airport (TFS)', 'Costa Adeje Palms'), T('other', 'Ferry', '2026-07-05', '09:00', 'Los Cristianos port', 'San Sebastian de La Gomera', 'Day trip'), T('departure', 'Shared shuttle', '2026-07-09', '07:50', 'Costa Adeje Palms', 'Tenerife South Airport (TFS)')] },
     ];
     return data;
@@ -454,9 +456,19 @@
       const dates = [...mine.map((f) => f.date), ...st.flatMap((x) => [x.check_in, x.check_out]), ...tr.map((t) => t.date).filter(Boolean)].sort();
       const start = dates[0] || null, end = dates[dates.length - 1] || null, hotel = st[0] || null;
       const { transfers, ...rest } = p;
-      return { ...rest, start, end, nights: start && end ? core.stayNights(start, end) : 0, trips: tripList, stays: st, transfers: tr,
+      const people = Array.isArray(p.companion_ids) ? p.companion_ids.map((id) => state.companions.find((c) => c.id === id)).filter(Boolean).map((c) => ({ id: c.id, name: c.name, relationship: c.relationship, date_of_birth: c.date_of_birth || null })) : null;
+      return { ...rest, companion_ids: people ? people.map((c) => c.id) : null, companions: people, start, end, nights: start && end ? core.stayNights(start, end) : 0, trips: tripList, stays: st, transfers: tr,
         trip_keys: tripList.map((t) => t.key), stay_ids: st.map((x) => x.id), image: (st.find((x) => x.image) || {}).image || null,
         place: [p.destination || (hotel && hotel.city), p.country || (hotel && hotel.country)].filter(Boolean).join(', ') };
+    };
+    // The travelling party: companion ids that exist, with travellers = you + them. Without a list the old party is kept.
+    const partyOf = (c, id) => {
+      if (c.party_given) {
+        const ids = [...new Set(c.companion_ids)].filter((x) => state.companions.some((k) => k.id === x));
+        return { companion_ids: ids, travellers: 1 + ids.length };
+      }
+      const old = id ? state.packages.find((x) => x.id === id) : null;
+      return { companion_ids: old && old.companion_ids ? old.companion_ids : null };
     };
     const writePackageMock = (id, b) => {
       let c; try { c = core.cleanPackage(b); } catch (e) { throw new HttpError(e.status || 400, e.message); }
@@ -473,7 +485,7 @@
         if (r.package_id && r.package_id !== id) throw new HttpError(400, 'A chosen stay is already part of another package.');
       });
       if (!trips.length && !c.stay_ids.length) throw new HttpError(400, 'A package needs at least one trip or stay. Log them first, then pick them here.');
-      const row = { name: c.name, provider: c.provider, destination: c.destination, country: c.country, board: c.board, travellers: c.travellers, price: c.price, booking_ref: c.booking_ref, notes: c.notes, transfers: c.transfers.map((t) => ({ id: uid(), ...t })) };
+      const row = { name: c.name, provider: c.provider, destination: c.destination, country: c.country, board: c.board, travellers: c.travellers, price: c.price, booking_ref: c.booking_ref, notes: c.notes, transfers: c.transfers.map((t) => ({ id: uid(), ...t })), free_child_place: !!c.free_child_place, ...partyOf(c, id) };
       if (!id) { id = uid(); state.packages.push({ id, created_at: new Date().toISOString(), ...row }); }
       else Object.assign(state.packages.find((x) => x.id === id), row);
       state.flights.forEach((f) => { if (f.package_id === id) f.package_id = null; });
@@ -546,6 +558,7 @@
       if (method === 'DELETE') {
         state.companions = state.companions.filter((x) => x.id !== id);
         state.flights.forEach((f) => { f.companion_ids = (f.companion_ids || []).filter((x) => x !== id); });
+        (state.packages || []).forEach((pk) => { if (Array.isArray(pk.companion_ids) && pk.companion_ids.includes(id)) { pk.companion_ids = pk.companion_ids.filter((x) => x !== id); pk.travellers = 1 + pk.companion_ids.length; } });
         persist();
         return [204, null];
       }
@@ -586,7 +599,7 @@
         companions: state.companions, airports: allAirports().filter((a) => used.has(a.iata)),
         flights: state.flights.map((f) => ({ ...f, distance_km: f.distance_km != null ? f.distance_km : core.haversineKm(getAirport(f.from_iata), getAirport(f.to_iata)) })),
         stays: state.stays.map((st) => ({ ...stayOut(st), ...(st.image_data ? { image_data: st.image_data } : {}) })),
-        packages: (state.packages || []).map((p) => ({ id: p.id, name: p.name, provider: p.provider, destination: p.destination, country: p.country, board: p.board, travellers: p.travellers, price: p.price, booking_ref: p.booking_ref, notes: p.notes, transfers: (p.transfers || []).map(({ id, ...t }) => t) })),
+        packages: (state.packages || []).map((p) => ({ id: p.id, name: p.name, provider: p.provider, destination: p.destination, country: p.country, board: p.board, travellers: p.travellers, companion_ids: p.companion_ids || null, free_child_place: !!p.free_child_place, price: p.price, booking_ref: p.booking_ref, notes: p.notes, transfers: (p.transfers || []).map(({ id, ...t }) => t) })),
       }];
     }
 
@@ -626,7 +639,7 @@
           if (!raw || typeof raw !== 'object') continue;
           const c = core.cleanPackage({ ...raw, trip_keys: [], stay_ids: [] });
           const id = raw.id ? String(raw.id).slice(0, 64) : uid();
-          const row = { id, created_at: new Date().toISOString(), name: c.name, provider: c.provider, destination: c.destination, country: c.country, board: c.board, travellers: c.travellers, price: c.price, booking_ref: c.booking_ref, notes: c.notes, transfers: c.transfers.map((t) => ({ id: uid(), ...t })) };
+          const row = { id, created_at: new Date().toISOString(), name: c.name, provider: c.provider, destination: c.destination, country: c.country, board: c.board, travellers: c.travellers, price: c.price, booking_ref: c.booking_ref, notes: c.notes, transfers: c.transfers.map((t) => ({ id: uid(), ...t })), free_child_place: !!c.free_child_place, ...partyOf(c, id) };
           const i = state.packages.findIndex((x) => x.id === id);
           if (i >= 0) state.packages[i] = row; else state.packages.push(row);
           packageMap.set(raw.id ? String(raw.id) : id, id); importedPackages += 1;

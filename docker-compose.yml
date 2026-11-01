@@ -23,6 +23,11 @@ services:
       FL_USER: ${FL_USER:-flightlog}
       FL_SIGNUPS: ${FL_SIGNUPS:-on}
       FL_GEOCODING: ${FL_GEOCODING:-on}
+    # If the address search on the Stays form says it cannot be reached (DNS problems on some NAS setups),
+    # remove the # from the next three lines to give the container public DNS servers.
+    # dns:
+    #   - 1.1.1.1
+    #   - 8.8.8.8
     volumes:
       - ${FL_DATA:-flightlog-data}:/data
 
